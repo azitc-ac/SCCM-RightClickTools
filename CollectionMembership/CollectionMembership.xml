@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ConfigMgr Console Extension: Collection-Mitgliedschaft verwalten
+  Ablage: %AdminConsolePath%\XmlStorage\Extensions\Actions\{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}\
+
+  GUID a92615d6-9df3-49ba-a8c9-6ecb0e8b956b = einzelne Device-Collection im Ergebnisbereich
+  (NICHT der Baum-Knoten DeviceCollectionsNode!). Dokumentierter, stabiler Standard.
+
+  Die Platzhalter ##SCRIPT_PATH##, ##EXT_PATH##, ##PATTERN_REQ##, ##PATTERN_AVL##
+  werden durch Install-Extension.ps1 ersetzt.
+-->
+<ActionDescription
+    Class="Executable"
+    DisplayName="Mitgliedschaft verwalten"
+    MnemonicDisplayName="Mitgliedschaft verwalten"
+    Description="Verwaltet in welchen Collections diese Collection als Mitglied (Include-Rule) enthalten ist">
+  <ShowOn>
+    <string>ContextMenu</string>
+  </ShowOn>
+  <ImagesDescription>
+    <ResourceAssembly>
+      <Assembly>AdminUI.UIResources.dll</Assembly>
+      <Type>Microsoft.ConfigurationManagement.AdminConsole.UIResources.Properties.Resources.resources</Type>
+    </ResourceAssembly>
+    <ImageResourceName>UpdateMembership</ImageResourceName>
+  </ImagesDescription>
+  <Executable>
+    <FilePath>##EXT_PATH##\nopswindow.exe</FilePath>
+    <Parameters>"##SCRIPT_PATH##" -CollectionID "##SUB:CollectionID##" -CollectionName "##SUB:Name##" -PatternRequired "##PATTERN_REQ##" -PatternAvailable "##PATTERN_AVL##"</Parameters>
+  </Executable>
+</ActionDescription>
