@@ -29,6 +29,11 @@
 .PARAMETER Pattern
     Optional regular expression; only matching lines count towards <Lines>.
 
+.PARAMETER Mode
+    Tail (default) returns the last lines of the file. List returns the files of the folder
+    <LogName> names (a folder, or a folder with a mask such as PSADT\*.log) - name, size, last
+    write - newest first, so a caller can pick one. Lines caps the listing as well.
+
 .NOTES
     Author : Alexander Zarenko IT Consulting (AZITC)
     Schema : 1
@@ -40,7 +45,10 @@ param(
 
     [int]$Lines = 100,
 
-    [string]$Pattern = ''
+    [string]$Pattern = '',
+
+    [ValidateSet('Tail', 'List')]
+    [string]$Mode = 'Tail'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,11 +99,12 @@ function ConvertTo-CompressedBase64 {
 }
 
 function New-Envelope {
-    param([string[]]$LineList, [string]$Path, [int]$Matched, [bool]$Truncated, [string]$Error)
+    param([string[]]$LineList, [string]$Path, [int]$Matched, [bool]$Truncated, [string]$Error, [object[]]$Files = @())
     $payload = [pscustomobject]@{
         Path    = $Path
         Matched = $Matched
         Lines   = [string[]]$LineList
+        Files   = [object[]]$Files
     }
     $json = $payload | ConvertTo-Json -Depth 3 -Compress
     $envelope = [pscustomobject]@{
@@ -138,6 +147,30 @@ function Test-Allowed {
         if ($FullPath.StartsWith($r, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
+}
+
+if ($Mode -eq 'List') {
+    $dir = $null; $mask = '*'
+    foreach ($c in $candidates) {
+        $d = $c; $m = '*'
+        if ($c.IndexOfAny([char[]]@('*', '?')) -ge 0) { $d = Split-Path -Path $c -Parent; $m = Split-Path -Path $c -Leaf }
+        $full = $null
+        try { $full = [System.IO.Path]::GetFullPath($d) } catch { continue }
+        if (-not (Test-Allowed -FullPath ($full.TrimEnd('\') + '\'))) { continue }
+        if (Test-Path -LiteralPath $full -PathType Container) { $dir = $full; $mask = $m; break }
+        # A file was named: list its folder.
+        if (Test-Path -LiteralPath $full -PathType Leaf) { $dir = Split-Path -Path $full -Parent; $mask = '*'; break }
+    }
+    if (-not $dir) {
+        Complete-Script -Json (New-Envelope -LineList @() -Path '' -Matched 0 -Truncated $false -Error "Folder '$LogName' not found below the served folders ($($roots -join '; ')).") -Code 2
+    }
+    $entries = @(Get-ChildItem -LiteralPath $dir -Filter $mask -File -ErrorAction SilentlyContinue | Where-Object { Test-Allowed -FullPath $_.FullName } | Sort-Object -Property LastWriteTime -Descending)
+    $total = $entries.Count
+    $shown = @($entries | Select-Object -First $Lines)
+    $files = @($shown | ForEach-Object { [pscustomobject]@{ N = $_.Name; P = $_.FullName; KB = [math]::Round($_.Length / 1KB, 1); W = $_.LastWriteTimeUtc.ToString('s') } })
+    $listLines = @($shown | ForEach-Object { '{0}  {1,10:N1} KB  {2}' -f $_.LastWriteTimeUtc.ToString('yyyy-MM-dd HH:mm:ss'), ($_.Length / 1KB), $_.Name })
+    Write-TKLog -Message ('Log-Get list: {0}\{1} - {2} of {3} files' -f $dir, $mask, $shown.Count, $total) -Component 'Log-Get'
+    Complete-Script -Json (New-Envelope -LineList $listLines -Path $dir -Matched $total -Truncated ($shown.Count -lt $total) -Error '' -Files $files) -Code 0
 }
 
 $file = $null

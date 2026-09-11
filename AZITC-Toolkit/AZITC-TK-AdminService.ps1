@@ -641,7 +641,7 @@ function Get-TKLog {
     <#
     .SYNOPSIS
         Runs AZITC-TK-Log-Get on a device: the last lines of a client log, reduced to
-        "date time  component  message".
+        "date time  component  message" - or, with -Mode List, the files of a folder (Files).
     #>
     [CmdletBinding()]
     param(
@@ -649,20 +649,23 @@ function Get-TKLog {
         [Parameter(Mandatory = $true)][string]$LogName,
         [int]$Lines = 100,
         [string]$Pattern = '',
+        [ValidateSet('Tail', 'List')][string]$Mode = 'Tail',
         [string]$ScriptName = 'AZITC-TK-Log-Get',
         [int]$TimeoutSec = 180
     )
     $dev = Get-TKDevice -Name $DeviceName
     $scr = Get-TKScript -Name $ScriptName
-    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters @{ LogName = $LogName; Lines = $Lines; Pattern = $Pattern } -TimeoutSec $TimeoutSec
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters @{ LogName = $LogName; Lines = $Lines; Pattern = $Pattern; Mode = $Mode } -TimeoutSec $TimeoutSec
     $envelope = ConvertFrom-TKEnvelope -Json $res.Output
     if ($envelope.Error) { Write-Warning "Log-Get on $($envelope.Host): $($envelope.Error)" }
-    if ($envelope.Truncated) { Write-Warning "Tail shortened to fit the output limit: $($envelope.Count) lines returned." }
+    if ($envelope.Truncated -and $Mode -eq 'Tail') { Write-Warning "Tail shortened to fit the output limit: $($envelope.Count) lines returned." }
     return [pscustomobject]@{
         Host        = $envelope.Host
         Path        = $envelope.Payload.Path
         Matched     = $envelope.Payload.Matched
         Lines       = $envelope.Lines
+        Files       = @($envelope.Payload.Files)
+        Truncated   = $envelope.Truncated
         Error       = $envelope.Error
         OperationId = $res.OperationId
         ExitCode    = $res.ExitCode

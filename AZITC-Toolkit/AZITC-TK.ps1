@@ -170,8 +170,8 @@ $actionScript = {
 }
 
 $logScript = {
-    param($DeviceName, $LogName, $Lines, $Pattern)
-    Get-TKLog -DeviceName $DeviceName -LogName $LogName -Lines $Lines -Pattern $Pattern
+    param($DeviceName, $LogName, $Lines, $Pattern, $Mode)
+    Get-TKLog -DeviceName $DeviceName -LogName $LogName -Lines $Lines -Pattern $Pattern -Mode $Mode
 }
 
 $notifyScript = {
@@ -354,6 +354,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
             <TextBlock Text="Pattern (regex):" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <TextBox x:Name="LogPattern" Width="200" VerticalContentAlignment="Center" Margin="0,0,12,0"/>
             <Button x:Name="BtnLog" Content="Get log"/>
+            <Button x:Name="BtnLogList" Content="List files" ToolTip="Lists the files of the folder named in the box (a folder such as PSADT, or a mask such as PSADT\*.log) and puts them into the list to pick from"/>
             <TextBlock x:Name="LogInfo" VerticalAlignment="Center" Foreground="#555555" Margin="12,0,0,0"/>
           </DockPanel>
           <TextBox Grid.Row="1" x:Name="LogText" Style="{StaticResource Mono}" Text=""/>
@@ -501,7 +502,7 @@ $script:Busy = $true
 $script:ServicesTable = $null
 $script:ProcessesTable = $null
 $script:CacheTable = $null
-$script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnLog,
+$script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnLog, $ui.BtnLogList,
     $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair,
     $ui.BtnClientRefresh, $ui.BtnSvcStart, $ui.BtnSvcStop, $ui.BtnSvcRestart, $ui.BtnProcKill, $ui.BtnCacheDelete, $ui.BtnCacheClear,
     $ui.BtnNotifyPolicy, $ui.BtnNotifyAppEval, $ui.BtnNotifySumEval, $ui.BtnNotifyHwInv, $ui.BtnNotifySwInv, $ui.BtnNotifyDdr, $ui.BtnNotifyCompliance,
@@ -704,20 +705,33 @@ function Start-Action {
 }
 
 function Start-Log {
+    param([string]$Mode = 'Tail')
     $lines = 100
     if (-not [int]::TryParse($ui.LogLines.Text, [ref]$lines)) { $lines = 100 }
     $log = [string]$ui.LogName.Text
     if (-not $log) { return }
+    if ($Mode -eq 'List') { $lines = 500 }
     Set-Busy $true "Reading $log on $($script:Device.Name)..."
-    Invoke-TKJob -Name 'Log' -Script $logScript -Arguments @($script:Device.Name, $log, $lines, [string]$ui.LogPattern.Text) -OnDone {
+    Invoke-TKJob -Name 'Log' -Script $logScript -Arguments @($script:Device.Name, $log, $lines, [string]$ui.LogPattern.Text, $Mode) -OnDone {
         param($r)
         Set-Busy $false
         if (-not $r.Ok) { $ui.LogText.Text = $r.Error; Show-Error "Log failed: $($r.Error)"; return }
         $v = $r.Value
         if ($v.Error) { $ui.LogText.Text = $v.Error; $ui.LogInfo.Text = ''; $ui.StatusText.Text = 'Log: ' + $v.Error; return }
         $ui.LogText.Text = (@($v.Lines) -join "`r`n")
-        $ui.LogInfo.Text = "$($v.Path)  -  $($v.Lines.Count) of $($v.Matched) lines"
-        $ui.LogText.ScrollToEnd()
+        if (@($v.Files).Count -gt 0) {
+            # A listing: the files go into the box to pick from, newest first, the mask stays on top.
+            $mask = [string]$ui.LogName.Text
+            $ui.LogName.Items.Clear()
+            $null = $ui.LogName.Items.Add($mask)
+            foreach ($f in $v.Files) { $null = $ui.LogName.Items.Add([string]$f.P) }
+            $ui.LogName.Text = $mask
+            $ui.LogInfo.Text = "$($v.Path)  -  $(@($v.Files).Count) of $($v.Matched) files, newest first; pick one and press Get log"
+            $ui.LogText.ScrollToHome()
+        } else {
+            $ui.LogInfo.Text = "$($v.Path)  -  $($v.Lines.Count) of $($v.Matched) lines"
+            $ui.LogText.ScrollToEnd()
+        }
         $ui.StatusText.Text = "Log read in $($r.Seconds) s"
         $ui.StatusOperation.Text = "OperationId $($v.OperationId)"
     }
@@ -897,7 +911,8 @@ $ui.BtnInspect.Add_Click({ Start-Action -Action 'Inspect' -ReEvaluate $false })
 $ui.BtnUninstall.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $false })
 $ui.BtnUninstallReEval.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $true })
 $ui.BtnRepair.Add_Click({ Start-Action -Action 'Repair' -ReEvaluate $false })
-$ui.BtnLog.Add_Click({ Start-Log })
+$ui.BtnLog.Add_Click({ Start-Log -Mode 'Tail' })
+$ui.BtnLogList.Add_Click({ Start-Log -Mode 'List' })
 $ui.GridSoftware.Add_SelectionChanged({ Update-SelectionButtons })
 $ui.SearchBox.Add_TextChanged({ Apply-Filter })
 $ui.LogName.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Return' -and -not $script:Busy) { Start-Log } })

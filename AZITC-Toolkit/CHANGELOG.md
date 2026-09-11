@@ -1,5 +1,19 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-11 (night, third round) - list the files of a log folder
+
+`AZITC-TK-Log-Get` v4 has a `Mode` parameter: `Tail` (as before) or `List`, which returns the
+files of the folder `LogName` names - a folder such as `PSADT`, a mask such as `PSADT\*.log`, or
+a file whose folder is wanted - as name, size and last write, newest first, capped by `Lines`,
+inside the served folders only. The payload carries `Files` (`N`, `P`, `KB`, `W`). Registered
+anew (new parameter, new GUID `C0BB9FAC-…`) and approved. In the window a **List files** button
+next to *Get log* fills the log box with the files found, so one can be picked and pulled;
+the mask stays on top of the list.
+
+Seen on CLIENT01 while testing: the PSADT logs of SCCMAppHelper packages live in
+`C:\Windows\CCM\Logs\PSADT` (12 files), not in `%windir%\Logs\Software` - which is why the
+earlier wildcard there found nothing.
+
 ## 2026-09-11 (night, second round) - what the first screenshot taught, and a toolkit log on the client
 
 The user's first look at the window raised three questions; all three had answers in the
