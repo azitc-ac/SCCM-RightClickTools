@@ -68,6 +68,17 @@ detection wants came from the MSI install that sat next to the EXE one, and the 
 it away. Recorded as an open item in SCCMAppHelper's STATUS.md. The toolkit's job - uninstall,
 trigger, show what happened - was done; the log tab is what made the diagnosis possible.
 
+### Later the same evening: `AZITC-TK-Client-Action.ps1`, and the repaired package installs
+
+The user repaired the 7-Zip package. To get it onto CLIENT01 without waiting for the schedules, a
+fourth Run Script triggers client schedules by name (`Action` = MachinePolicy /
+AppDeploymentEval / HardwareInventory / SoftwareInventory / DiscoveryData / SoftwareUpdateScan /
+SoftwareUpdateEval / All; `All` waits 20 s between policy and evaluation). Registered as
+`0D44A52D-87AD-4788-B545-59000DB3D06C`, timeout 120, ran in 52 s. Content state was checked
+first on `SMS_ObjectContentExtraInfo` (source version 6, 1/1 success). AppEnforce.log then:
+install enforcement 19:26:54, exit 0 after 8 s, "Discovered application"; `CCM_Application`
+Installed / EvaluationState 1. Four scripts in the site now.
+
 ### Open
 
 * `ScriptExecutionState` values other than 1 and 2 have not been observed.
