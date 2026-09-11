@@ -1,9 +1,9 @@
 ﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Prueft, ob die Konsolenerweiterung "Mitgliedschaft verwalten" korrekt installiert ist.
+    Checks whether the console extension "Manage Membership" is installed completely.
 .PARAMETER ConsolePath
-    Pfad zur AdminConsole. Wird automatisch ermittelt falls nicht angegeben.
+    AdminConsole folder. Found by itself when not given.
 #>
 param(
     [string]$ConsolePath = ''
@@ -12,10 +12,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Gleiche GUID wie im Installer (Device-Collection im Ergebnisbereich)
+# Same GUID as in the installer (device collection in the result pane)
 $actionGuid = '{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}'
 
-# AdminConsole-Pfad ermitteln
+# Find the AdminConsole folder
 if (-not $ConsolePath) {
     $candidates = @(
         'D:\Program Files\Microsoft Configuration Manager\AdminConsole',
@@ -29,14 +29,14 @@ if (-not $ConsolePath) {
 }
 
 if (-not $ConsolePath -or -not (Test-Path $ConsolePath)) {
-    Write-Error "AdminConsole-Pfad nicht gefunden. Bitte -ConsolePath angeben."
+    Write-Error "AdminConsole folder not found - give -ConsolePath."
     exit 1
 }
 
 Write-Host "AdminConsole : $ConsolePath" -ForegroundColor Cyan
-Write-Host "Action-GUID  : $actionGuid`n" -ForegroundColor Cyan
+Write-Host "Action GUID  : $actionGuid`n" -ForegroundColor Cyan
 
-# Datei-Pruefung
+# File check
 $scriptDir = Join-Path $ConsolePath 'extensions\RightClickTools'
 $actionDir = Join-Path $ConsolePath "XmlStorage\Extensions\Actions\$actionGuid"
 
@@ -46,22 +46,22 @@ $checks = @(
     @{ Name = 'CollectionMembership.xml';        Path = (Join-Path $actionDir 'CollectionMembership.xml') }
 )
 
-Write-Host "Datei-Pruefung:" -ForegroundColor Yellow
+Write-Host "Files:" -ForegroundColor Yellow
 $allOk = $true
 foreach ($c in $checks) {
     if (Test-Path $c.Path) {
         Write-Host ("  [OK]    {0}" -f $c.Name) -ForegroundColor Green
     } else {
-        Write-Host ("  [FEHLT] {0}" -f $c.Name) -ForegroundColor Red
-        Write-Host ("          {0}" -f $c.Path) -ForegroundColor Gray
+        Write-Host ("  [MISSING] {0}" -f $c.Name) -ForegroundColor Red
+        Write-Host ("            {0}" -f $c.Path) -ForegroundColor Gray
         $allOk = $false
     }
 }
 
-# XML-Inhalt anzeigen
+# Show the action XML
 $xmlPath = Join-Path $actionDir 'CollectionMembership.xml'
 if (Test-Path $xmlPath) {
-    Write-Host "`nXML-Inhalt (Auszug):" -ForegroundColor Yellow
+    Write-Host "`nAction XML (excerpt):" -ForegroundColor Yellow
     [xml]$xml = Get-Content $xmlPath -Encoding UTF8
     $a = $xml.ActionDescription
     Write-Host "  DisplayName    : $($a.DisplayName)"
@@ -69,15 +69,15 @@ if (Test-Path $xmlPath) {
     Write-Host "  Parameters     : $($a.Executable.Parameters)"
 }
 
-Write-Host "`nWICHTIG - haeufigste Fehlerquelle:" -ForegroundColor Yellow
-Write-Host "  Hierarchie-Einstellung 'Only allow console extensions that are" -ForegroundColor Gray
-Write-Host "  approved for the hierarchy' MUSS deaktiviert sein, sonst werden" -ForegroundColor Gray
-Write-Host "  alle file-basierten Extensions stillschweigend ausgeblendet." -ForegroundColor Gray
-Write-Host "  Verwaltung > Standortkonfiguration > Standorte > Hierarchieeinstellungen > Allgemein" -ForegroundColor Gray
+Write-Host "`nIMPORTANT - the usual cause when the entry is missing:" -ForegroundColor Yellow
+Write-Host "  The hierarchy setting 'Only allow console extensions that are" -ForegroundColor Gray
+Write-Host "  approved for the hierarchy' MUST be off, otherwise every" -ForegroundColor Gray
+Write-Host "  file-based extension is hidden without a trace." -ForegroundColor Gray
+Write-Host "  Administration > Site Configuration > Sites > Hierarchy Settings > General" -ForegroundColor Gray
 
 if ($allOk) {
-    Write-Host "`nAlle Dateien vorhanden. Console komplett beenden und neu starten," -ForegroundColor Green
-    Write-Host "dann Rechtsklick auf eine Device Collection im Ergebnisbereich." -ForegroundColor Green
+    Write-Host "`nAll files present. Close the console completely and start it again," -ForegroundColor Green
+    Write-Host "then right-click a device collection in the result pane." -ForegroundColor Green
 } else {
-    Write-Host "`nEs fehlen Dateien - bitte Install-Extension.ps1 (erneut) ausfuehren." -ForegroundColor Red
+    Write-Host "`nFiles are missing - run Install-Extension.ps1 (again)." -ForegroundColor Red
 }

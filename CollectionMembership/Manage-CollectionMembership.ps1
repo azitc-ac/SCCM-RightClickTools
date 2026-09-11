@@ -416,7 +416,7 @@ $form.Controls.Add($stripTop)
 
 #region Collection picker
 $btnPickColl.Add_Click({
-    # CM-Verbindung herstellen falls noch nicht geschehen
+    # Connect to the site unless already connected
     if (-not $script:SiteCode) {
         $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
         try {

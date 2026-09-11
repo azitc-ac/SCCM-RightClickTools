@@ -1,19 +1,19 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!--
-  ConfigMgr Console Extension: Collection-Mitgliedschaft verwalten
-  Ablage: %AdminConsolePath%\XmlStorage\Extensions\Actions\{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}\
+  ConfigMgr console extension: manage collection membership
+  Location: %AdminConsolePath%\XmlStorage\Extensions\Actions\{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}\
 
-  GUID a92615d6-9df3-49ba-a8c9-6ecb0e8b956b = einzelne Device-Collection im Ergebnisbereich
-  (NICHT der Baum-Knoten DeviceCollectionsNode!). Dokumentierter, stabiler Standard.
+  GUID a92615d6-9df3-49ba-a8c9-6ecb0e8b956b = a single device collection in the result pane
+  (NOT the tree node DeviceCollectionsNode). Documented, stable constant.
 
-  Die Platzhalter ##SCRIPT_PATH##, ##EXT_PATH##, ##PATTERN_REQ##, ##PATTERN_AVL##
-  werden durch Install-Extension.ps1 ersetzt.
+  The placeholders ##SCRIPT_PATH##, ##EXT_PATH##, ##PATTERN_REQ##, ##PATTERN_AVL##
+  are filled in by Install-Extension.ps1 (which also localises the menu entry).
 -->
 <ActionDescription
     Class="Executable"
-    DisplayName="Mitgliedschaft verwalten"
-    MnemonicDisplayName="Mitgliedschaft verwalten"
-    Description="Verwaltet in welchen Collections diese Collection als Mitglied (Include-Rule) enthalten ist">
+    DisplayName="Manage Membership"
+    MnemonicDisplayName="Manage Membership"
+    Description="Manages which collections include this collection as a member (include rule)">
   <ShowOn>
     <string>ContextMenu</string>
   </ShowOn>

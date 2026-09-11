@@ -1,15 +1,15 @@
 ﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Listet die ActionSpace-GUIDs (NamespaceGuid) aus AssetManagementNode.xml auf, die
-    "Device" oder "Collection" im Id/DisplayName tragen. Hilft, den richtigen GUID-Ordner
-    fuer eine Konsolenerweiterung zu finden.
+    Lists the action space GUIDs (NamespaceGuid) in AssetManagementNode.xml whose Id or
+    DisplayName contains "Device" or "Collection". Helps to find the right GUID folder
+    for a console extension.
 
-    Hinweis: Fuer den Rechtsklick auf eine EINZELNE Device-Collection im Ergebnisbereich
-    ist die GUID a92615d6-9df3-49ba-a8c9-6ecb0e8b956b der dokumentierte Standard
-    (NICHT die DeviceCollectionsNode-GUID = Baum-Knoten).
+    Note: for the right-click on a SINGLE device collection in the result pane the GUID
+    a92615d6-9df3-49ba-a8c9-6ecb0e8b956b is the documented constant
+    (NOT the DeviceCollectionsNode GUID, which is the tree node).
 .PARAMETER ConsolePath
-    Pfad zur AdminConsole. Wird automatisch ermittelt falls nicht angegeben.
+    AdminConsole folder. Found by itself when not given.
 #>
 param(
     [string]$ConsolePath = ''
@@ -18,7 +18,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# AdminConsole-Pfad ermitteln
+# Find the AdminConsole folder
 if (-not $ConsolePath) {
     $candidates = @(
         'D:\Program Files\Microsoft Configuration Manager\AdminConsole',
@@ -32,7 +32,7 @@ if (-not $ConsolePath) {
 }
 
 if (-not $ConsolePath -or -not (Test-Path $ConsolePath)) {
-    Write-Error "AdminConsole-Pfad nicht gefunden. Bitte -ConsolePath angeben."
+    Write-Error "AdminConsole folder not found - give -ConsolePath."
     exit 1
 }
 
@@ -40,13 +40,13 @@ Write-Host "AdminConsole: $ConsolePath`n" -ForegroundColor Cyan
 
 $assetMgmtXml = Join-Path $ConsolePath 'XmlStorage\ConsoleRoot\AssetManagementNode.xml'
 if (-not (Test-Path $assetMgmtXml)) {
-    Write-Error "AssetManagementNode.xml nicht gefunden: $assetMgmtXml"
+    Write-Error "AssetManagementNode.xml not found: $assetMgmtXml"
     exit 1
 }
 
 [xml]$doc = Get-Content $assetMgmtXml -Raw -Encoding UTF8
 
-Write-Host "Nodes mit 'Device' oder 'Collection' im Id/DisplayName:`n" -ForegroundColor Yellow
+Write-Host "Nodes with 'Device' or 'Collection' in Id/DisplayName:`n" -ForegroundColor Yellow
 
 $nodes = $doc.SelectNodes(
     "//*[contains(@Id, 'Device') or contains(@Id, 'Collection') or " +

@@ -1,80 +1,54 @@
-# SCCM RightClickTools
+# SCCM Right-Click Tools
 
-Konsolenerweiterungen ("Right-Click Tools") für die Microsoft Configuration Manager (SCCM/ConfigMgr) Admin-Konsole.
+Console extensions for the Microsoft Configuration Manager admin console (current branch),
+file-based, one folder per tool. Both need Windows PowerShell 5.1 and a console.
 
-> **English TL;DR:** Legacy file-based ConfigMgr console extensions. Currently contains **CollectionMembership** – a right-click tool for device collections that shows, in two tabs (Required / Available), which collections include the selected collection via an include rule, and lets you add/remove memberships. Run `CollectionMembership\Install-Extension.ps1` as admin. **Important:** the hierarchy setting *"Only allow console extensions that are approved for the hierarchy"* must be **disabled**, otherwise file-based extensions are silently hidden. UI and menu entry are bilingual (DE/EN, auto-detected).
+| Tool | Right-click on | What it does |
+| --- | --- | --- |
+| [**AZITC Toolkit**](AZITC-Toolkit/README.md) | a device (Devices node, or a device in a collection's member view) | A tabbed window for that device. **Software (ARP)** - installed software with search and sort, Inspect / Uninstall / Uninstall + re-evaluate / Repair per entry, plus the ConfigMgr applications the client knows with Install / Uninstall / Repair. **Logs** - tail of any client log, or the files of a log folder to pick from. **Client** - facts, pending reboot with its sources, services (start/stop/restart), processes (end), cache (delete/clear), client notifications and schedules. Everything on the client runs as SYSTEM through **Run Scripts**; results come back through the **AdminService**. No WinRM, no remote WMI, no local admin rights on the client. Every run leaves a CMTrace-readable line in `CCM\Logs\AZITC-Toolkit\AZITC-Toolkit.log` on the client. |
+| [**CollectionMembership**](CollectionMembership/README.md) | a device collection | "Manage Membership": shows in two tabs (required / available) which collections include the selected collection through an include rule, and adds or removes those memberships. Bilingual, German or English by console language. |
 
----
+## Installing
 
-## CollectionMembership – "Mitgliedschaft verwalten"
-
-Rechtsklick auf eine **Gerätesammlung** im Ergebnisbereich → **Mitgliedschaft verwalten**.
-
-Der Dialog zeigt in zwei Karteikarten – **Pflicht** (`ins-req-dev-*`) und **Verfügbar** (`ins-avl-dev-*`) – welche Collections die gewählte Collection bereits als Mitglied (Include-Rule) enthalten und welche nicht. Per Pfeil-Buttons werden Collections nach links/rechts verschoben; **Speichern** legt die Include-Rules an bzw. entfernt sie.
-
-- `...`-Button: zur Laufzeit eine andere Collection wählen (sucht automatisch nach `rol-dev`).
-- Namensmuster in der Kopfzeile frei anpassbar.
-- GUI **und** Menü-Eintrag zweisprachig (Deutsch/Englisch), automatisch nach Console-Sprache.
-
-### Installation
-
-Auf dem Rechner mit der ConfigMgr-Konsole, in einer **Administrator-PowerShell**:
+Both tools have an installer that finds the console, copies the files, compiles a small
+hidden-window launcher with the .NET Framework's `csc.exe` and writes the action XML. Run it as
+administrator on the machine with the console, then close and reopen the console.
 
 ```powershell
-.\CollectionMembership\Install-Extension.ps1
+.\AZITC-Toolkit\Publish-AZITCTKScripts.ps1 -SmsProvider <provider FQDN> [-SkipCertificateCheck]   # once per site: the Run Scripts
+.\AZITC-Toolkit\Install-AZITCTKConsoleExtension.ps1                                                # per console
+.\CollectionMembership\Install-Extension.ps1                                                       # per console
 ```
 
-Optionale Parameter:
+**The one setting that hides everything:** since ConfigMgr 2103 the hierarchy setting *Only
+allow console extensions that are approved for the hierarchy* (Administration > Site
+Configuration > Sites > Hierarchy Settings > General) hides every file-based extension without
+a trace - no menu entry, no log line. It has to be off. `CollectionMembership\Verify-Installation.ps1`
+checks the files and says so again.
 
-| Parameter           | Standard          | Beschreibung                                            |
-|---------------------|-------------------|---------------------------------------------------------|
-| `-PatternRequired`  | `ins-req-dev-*`   | Namensmuster für die Pflicht-Karteikarte                |
-| `-PatternAvailable` | `ins-avl-dev-*`   | Namensmuster für die Verfügbar-Karteikarte              |
-| `-ConsolePath`      | *(auto)*          | Pfad zur AdminConsole, falls nicht automatisch gefunden |
-| `-Language`         | `auto`            | `auto` \| `de` \| `en` – erzwingt die Sprache           |
+## How the console runs them
 
-Der Installer:
-1. ermittelt den AdminConsole-Pfad,
-2. kompiliert `nopswindow.cs` → `nopswindow.exe` (startet PowerShell ohne Konsolenfenster),
-3. kopiert das GUI-Skript nach `AdminConsole\extensions\RightClickTools\`,
-4. legt die Action-XML unter `AdminConsole\XmlStorage\Extensions\Actions\{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}\` ab.
+An `ActionDescription` of class `Executable` under
+`<AdminConsole>\XmlStorage\Extensions\Actions\<node GUID>\` names an executable and its
+parameters; the console fills in tokens such as `##SUB:Name##`, `##SUB:ResourceID##`,
+`##SUB:CollectionID##`, `##SUB:__Server##` and `##SUB:SiteCode##`. Unknown elements make the
+console drop the action silently, so the XML files stay minimal. The node GUIDs used here were
+read from the console's own `XmlStorage\ConsoleRoot`:
 
-Danach die Konsole **komplett beenden und neu starten**.
+| GUID | Rows are |
+| --- | --- |
+| `ed9dee86-eadd-4ac8-82a1-7234a4646e62` | devices in the Devices node (`SMS_CombinedDeviceResources`) |
+| `3fd01cd1-9e01-461e-92cd-94866b8d1f39` | devices in a collection's member view |
+| `a92615d6-9df3-49ba-a8c9-6ecb0e8b956b` | device collections in the result pane |
 
-### ⚠️ Wichtigste Fehlerquelle: Hierarchie-Einstellung
+`CollectionMembership\Find-DeviceCollectionsGUID.ps1` lists the candidates on any console.
 
-Ab ConfigMgr 2103 gibt es die Hierarchie-Einstellung **"Only allow console extensions that are approved for the hierarchy"** (bei 2103-Baseline-Installationen **standardmäßig aktiv**). Solange sie aktiv ist, werden **alle alten file-basierten Extensions stillschweigend ausgeblendet** – kein Menüpunkt, kein Log-Eintrag.
+## Repository notes
 
-Abschalten: **Verwaltung → Standortkonfiguration → Standorte → (Menüband) Hierarchieeinstellungen → Reiter Allgemein** → Häkchen entfernen → Konsole neu starten.
+`CLAUDE.md` carries the working rules; `AZITC-Toolkit\CHANGELOG.md` is the dated log of what
+was built, measured and found on a real site. All `.ps1` files are UTF-8 with BOM and CRLF. The
+toolkit's version (`AZITC-Toolkit\VERSION`, shown in the window title) is raised with every
+commit by the pre-commit hook in `.githooks` - `git config core.hooksPath .githooks` once per
+clone.
 
-### Diagnose
-
-```powershell
-# Prüft, ob alle Dateien korrekt installiert sind:
-.\CollectionMembership\Verify-Installation.ps1
-
-# Listet Device-/Collection-bezogene ActionSpace-GUIDs (zum Anpassen an andere Objekte):
-.\CollectionMembership\Find-DeviceCollectionsGUID.ps1
-```
-
-### Deinstallation
-
-```powershell
-$cp = "D:\Program Files\Microsoft Configuration Manager\AdminConsole"  # ggf. anpassen
-Remove-Item "$cp\XmlStorage\Extensions\Actions\{a92615d6-9df3-49ba-a8c9-6ecb0e8b956b}" -Recurse -Force
-Remove-Item "$cp\extensions\RightClickTools\Manage-CollectionMembership.ps1" -Force
-Remove-Item "$cp\extensions\RightClickTools\nopswindow.exe" -Force
-```
-
-## Technische Hinweise
-
-- **GUID `a92615d6-9df3-49ba-a8c9-6ecb0e8b956b`** = einzelne Device-Collection im Ergebnisbereich (dokumentierter, stabiler Standard). **Nicht** verwechseln mit der DeviceCollectionsNode-GUID `6d357b6b-…` (das ist der Baum-Knoten, kein Item-Rechtsklick).
-- **Action-Schema** (`Class="Executable"`): die Elemente heißen `<FilePath>` und `<Parameters>`. Unbekannte Elemente/Attribute führen dazu, dass die Action **still verworfen** wird.
-- Alle `.ps1` werden als **UTF-8 mit BOM** gespeichert (sonst zerstört PowerShell 5.x Umlaute).
-- Laufzeit-Tokens, die die Console ersetzt: `##SUB:CollectionID##`, `##SUB:Name##`.
-
-## Voraussetzungen
-
-- Microsoft Configuration Manager Admin-Konsole (Current Branch)
-- .NET Framework (für die Kompilierung von `nopswindow.exe` via `csc.exe`)
-- Ausführung als Administrator
+Author: Alexander Zarenko IT Consulting (AZITC).

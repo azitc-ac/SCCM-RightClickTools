@@ -1,7 +1,7 @@
 # Working notes for this repository
 
 Console extensions ("right-click tools") for the Configuration Manager admin console, one
-folder per tool. `README.md` at the root (German) describes the tools for their users; each
+folder per tool. `README.md` at the root (English) presents both tools; each
 tool folder carries its own `README.md` and, where work is ongoing, a `CHANGELOG.md` that is
 the handover log - dated, with what was actually run and measured.
 
