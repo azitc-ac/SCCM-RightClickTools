@@ -20,8 +20,8 @@ the handover log - dated, with what was actually run and measured.
   Scripts, CMPivot, AdminService. If something cannot be done that way, say so and stop.
   Destructive actions (Uninstall/Repair) only against the lab device the user names
   (currently CLIENT01); ask before any other device. Never change hierarchy or client settings,
-  the script-approval setting included. The script author account cannot approve its own
-  scripts here (`TwoKeyApproval = 1`); approval comes from a second admin account.
+  the script-approval setting included. The user switched off the two-key script approval on 2026-09-11, so the author account
+  approves its own scripts (`Approve-TKScript`); do not touch the setting itself.
 - Everything created in the hierarchy carries the prefix `AZITC-TK-`.
 - Do not present a guess as a fact. When an API shape is unverified, verify it (metadata,
   WMI class definition, SMSProv.log, the SQL objects) and write down where it came from.
