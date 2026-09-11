@@ -1,0 +1,208 @@
+﻿<#
+.SYNOPSIS
+    AZITC Toolkit - install, uninstall or repair a ConfigMgr application through the client SDK.
+
+.DESCRIPTION
+    Designed to run as a Configuration Manager "Run Script" (SYSTEM context, Windows PowerShell 5.1).
+    Calls CCM_Application.Install / Uninstall / Repair in root\ccm\ClientSDK for the application
+    the client already knows (it has to be deployed or available to the device), then watches
+    EvaluationState / InstallState for up to TimeoutMin minutes and reports the course.
+    Emits ONE JSON object.
+
+    Exit code: 0 = the client reached the wanted state, 1 = enforcement failed or timed out,
+    2 = nothing done (application unknown, method rejected, action not allowed).
+
+    Recommended script timeout in the console: 1800 seconds. Keep TimeoutMin below that.
+
+.PARAMETER Action
+    Install | Uninstall | Repair
+.PARAMETER AppId
+    CCM_Application.Id, e.g. ScopeId_.../Application_...
+.PARAMETER Revision
+    CCM_Application.Revision. 0 = the revision the client currently holds.
+.PARAMETER TimeoutMin
+    Minutes to watch the enforcement (1..25, default 10). The method itself returns at once.
+.PARAMETER IsRebootIfNeeded
+    1 = let the client restart if the application demands it. Default 0.
+
+.NOTES
+    Author : Alexander Zarenko IT Consulting (AZITC)
+    Schema : 1
+#>
+
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('Install', 'Uninstall', 'Repair')]
+    [string]$Action,
+
+    [Parameter(Mandatory = $true)]
+    [string]$AppId,
+
+    [int]$Revision = 0,
+
+    [int]$TimeoutMin = 10,
+
+    [int]$IsRebootIfNeeded = 0
+)
+
+$ErrorActionPreference = 'Stop'
+$SchemaVersion = 1
+
+# CCM_Application.EvaluationState, from the client SDK documentation of the class. Values
+# above 13 exist (waiting for user session, reboot, ...) and are reported by number only.
+$EvalText = @{
+    0  = 'No state information'
+    1  = 'Enforced to the resolved state'
+    2  = 'Not required on the client'
+    3  = 'Available for enforcement'
+    4  = 'Last enforcement failed'
+    5  = 'Waiting for content download'
+    6  = 'Waiting for content download'
+    7  = 'Waiting for dependencies to download'
+    8  = 'Waiting for a service window'
+    9  = 'Waiting for a pending reboot'
+    10 = 'Waiting for serialized enforcement'
+    11 = 'Enforcing dependencies'
+    12 = 'Enforcing'
+    13 = 'Enforced and failed'
+}
+
+$result = [ordered]@{
+    Schema        = $SchemaVersion
+    Kind          = 'CMAppAction'
+    Host          = $env:COMPUTERNAME
+    TimeUtc       = (Get-Date).ToUniversalTime().ToString('s')
+    Action        = $Action
+    AppId         = $AppId
+    Revision      = $Revision
+    Name          = ''
+    Version       = ''
+    AllowedActions= @()
+    Before        = $null
+    MethodReturn  = $null
+    JobId         = ''
+    Course        = @()
+    After         = $null
+    Reached       = $false
+    TimedOut      = $false
+    DurationSec   = 0
+    Error         = ''
+}
+
+function Complete-Script {
+    param([int]$Code)
+    $result | ConvertTo-Json -Depth 4 -Compress | Write-Output
+    exit $Code
+}
+
+function Get-App {
+    param([string]$Id, [int]$Rev)
+    # The ClientSDK provider refuses WQL filters ("Provider is not capable of the attempted
+    # operation"), so every instance is read and the match is made here. The second
+    # Get-CimInstance fills the lazy properties of the chosen instance.
+    $all = @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop)
+    $apps = @($all | Where-Object { [string]$_.Id -eq $Id -and ($Rev -le 0 -or [int]$_.Revision -eq $Rev) } | Get-CimInstance -ErrorAction Stop)
+    if ($apps.Count -eq 0) { return $null }
+    # Highest revision when none was given.
+    return ($apps | Sort-Object { [int]$_.Revision } -Descending | Select-Object -First 1)
+}
+
+function Get-State {
+    param($App)
+    $es = [int]$App.EvaluationState
+    $text = 'Unknown'
+    if ($EvalText.ContainsKey($es)) { $text = $EvalText[$es] }
+    return [pscustomobject]@{
+        TimeUtc         = (Get-Date).ToUniversalTime().ToString('HH:mm:ss')
+        InstallState    = [string]$App.InstallState
+        ResolvedState   = [string]$App.ResolvedState
+        EvaluationState = $es
+        EvaluationText  = $text
+        ErrorCode       = [int]$App.ErrorCode
+        PercentComplete = [int]$App.PercentComplete
+    }
+}
+
+# --- Look up ------------------------------------------------------------------
+
+$app = $null
+try { $app = Get-App -Id $AppId -Rev $Revision } catch { $result.Error = "CCM_Application query failed: $($_.Exception.Message)"; Complete-Script -Code 2 }
+if ($null -eq $app) { $result.Error = 'Application not known to this client (not deployed / not available to the device).'; Complete-Script -Code 2 }
+
+$result.Name = [string]$app.Name
+$result.Version = [string]$app.SoftwareVersion
+$result.Revision = [int]$app.Revision
+$result.AllowedActions = @($app.AllowedActions)
+$result.Before = Get-State -App $app
+
+if ($result.AllowedActions -notcontains $Action) {
+    $result.Error = "Action '$Action' is not in AllowedActions ($($result.AllowedActions -join ', ')) for this application on this client."
+    Complete-Script -Code 2
+}
+
+if ($TimeoutMin -lt 1) { $TimeoutMin = 1 }
+if ($TimeoutMin -gt 25) { $TimeoutMin = 25 }
+
+# --- Call ---------------------------------------------------------------------
+
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+try {
+    $callArgs = @{
+        Id               = [string]$app.Id
+        Revision         = [string]$app.Revision
+        IsMachineTarget  = [bool]$app.IsMachineTarget
+        EnforcePreference= [uint32]0
+        Priority         = 'High'
+        IsRebootIfNeeded = ($IsRebootIfNeeded -eq 1)
+    }
+    $r = Invoke-CimMethod -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -MethodName $Action -Arguments $callArgs -ErrorAction Stop
+    $result.MethodReturn = [int]$r.ReturnValue
+    if ($r.PSObject.Properties['JobId']) { $result.JobId = [string]$r.JobId }
+} catch {
+    $result.Error = "CCM_Application.$Action failed: $($_.Exception.Message)"
+    Complete-Script -Code 2
+}
+if ($result.MethodReturn -ne 0) {
+    $result.Error = "CCM_Application.$Action returned $($result.MethodReturn)."
+    Complete-Script -Code 2
+}
+
+# --- Watch --------------------------------------------------------------------
+
+$wantInstalled = ($Action -ne 'Uninstall')
+$deadline = (Get-Date).AddMinutes($TimeoutMin)
+$last = ''
+$course = New-Object System.Collections.Generic.List[object]
+$reached = $false
+$failed = $false
+$sawEnforcing = $false
+do {
+    Start-Sleep -Seconds 5
+    $cur = $null
+    try { $cur = Get-App -Id $AppId -Rev $result.Revision } catch { }
+    if ($null -eq $cur) { continue }
+    $st = Get-State -App $cur
+    $sig = "$($st.InstallState)|$($st.EvaluationState)|$($st.PercentComplete)"
+    if ($sig -ne $last) { $course.Add($st); $last = $sig }
+    if ($st.EvaluationState -in @(11, 12)) { $sawEnforcing = $true }
+    if ($st.EvaluationState -in @(4, 13)) { $failed = $true; break }
+    $isInstalled = ($st.InstallState -eq 'Installed')
+    # Done when the state flipped to what was asked for and the client is no longer enforcing.
+    if ($isInstalled -eq $wantInstalled -and $st.EvaluationState -notin @(5, 6, 7, 10, 11, 12) -and ($sawEnforcing -or $Action -eq 'Repair' -or $st.EvaluationState -in @(1, 2, 3))) {
+        # For Repair the install state does not change; accept once enforcement has run.
+        if ($Action -ne 'Repair' -or $sawEnforcing) { $reached = $true; break }
+    }
+} while ((Get-Date) -lt $deadline)
+
+$sw.Stop()
+$result.DurationSec = [int]$sw.Elapsed.TotalSeconds
+$result.Course = @($course.ToArray())
+$final = $null
+try { $final = Get-App -Id $AppId -Rev $result.Revision } catch { }
+if ($final) { $result.After = Get-State -App $final }
+$result.Reached = $reached
+$result.TimedOut = (-not $reached -and -not $failed)
+
+if ($failed) { $result.Error = "Enforcement failed (EvaluationState $($result.After.EvaluationState), ErrorCode $($result.After.ErrorCode))."; Complete-Script -Code 1 }
+if ($result.TimedOut) { $result.Error = "Not finished after $TimeoutMin min - the client is still working on it (see After)."; Complete-Script -Code 1 }
+Complete-Script -Code 0

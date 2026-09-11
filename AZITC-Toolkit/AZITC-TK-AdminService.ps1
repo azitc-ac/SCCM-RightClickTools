@@ -755,6 +755,36 @@ function Invoke-TKSoftwareAction {
     return $parsed
 }
 
+function Invoke-TKCMAppAction {
+    <#
+    .SYNOPSIS
+        Runs AZITC-TK-CMApp-Action on a device: Install / Uninstall / Repair of a ConfigMgr
+        application through CCM_Application, watched for up to TimeoutMin minutes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeviceName,
+        [Parameter(Mandatory = $true)][ValidateSet('Install', 'Uninstall', 'Repair')][string]$Action,
+        [Parameter(Mandatory = $true)][string]$AppId,
+        [int]$Revision = 0,
+        [int]$TimeoutMin = 10,
+        [switch]$RebootIfNeeded,
+        [string]$ScriptName = 'AZITC-TK-CMApp-Action'
+    )
+    $dev = Get-TKDevice -Name $DeviceName
+    $scr = Get-TKScript -Name $ScriptName
+    $reboot = 0; if ($RebootIfNeeded) { $reboot = 1 }
+    $params = @{ Action = $Action; AppId = $AppId; Revision = $Revision; TimeoutMin = $TimeoutMin; IsRebootIfNeeded = $reboot }
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters $params -TimeoutSec (($TimeoutMin * 60) + 180)
+    $parsed = $null
+    try { $parsed = $res.Output | ConvertFrom-Json } catch { }
+    if ($null -eq $parsed) { return [pscustomobject]@{ State = $res.State; ExitCode = $res.ExitCode; RawOutput = $res.Output; OperationId = $res.OperationId } }
+    $parsed | Add-Member -NotePropertyName ScriptState -NotePropertyValue $res.State -Force
+    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $res.ExitCode -Force
+    $parsed | Add-Member -NotePropertyName OperationId -NotePropertyValue $res.OperationId -Force
+    return $parsed
+}
+
 <#
 === Usage (end-to-end test without GUI) ===================================
 
