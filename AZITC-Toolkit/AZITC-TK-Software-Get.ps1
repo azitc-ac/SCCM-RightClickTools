@@ -23,6 +23,24 @@
 
 $ErrorActionPreference = 'Stop'
 $SchemaVersion = 1
+
+# --- Toolkit log: CMTrace format, in a subfolder of the client's log folder ---------------
+$TKLogDir = Join-Path -Path $env:windir -ChildPath 'CCM\Logs'
+try { $tkCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global' -ErrorAction Stop; if ($tkCfg.LogDirectory) { $TKLogDir = [string]$tkCfg.LogDirectory } } catch { }
+$TKLogDir = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit'
+function Write-TKLog {
+    # Type: 1 info, 2 warning, 3 error - the colours CMTrace uses.
+    param([string]$Message, [string]$Component = 'AZITC-TK', [int]$Type = 1)
+    try {
+        if (-not (Test-Path -LiteralPath $TKLogDir)) { New-Item -ItemType Directory -Path $TKLogDir -Force | Out-Null }
+        $file = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit.log'
+        if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).Length -gt 2MB) { Move-Item -LiteralPath $file -Destination ($file -replace '\.log$', '.lo_') -Force }
+        $now = Get-Date
+        $bias = -[int]([TimeZoneInfo]::Local.GetUtcOffset($now).TotalMinutes)
+        $line = '<![LOG[{0}]LOG]!><time="{1}{2}" date="{3}" component="{4}" context="" type="{5}" thread="{6}" file="">' -f $Message, $now.ToString('HH:mm:ss.fff'), ('{0:+000;-000}' -f $bias), $now.ToString('MM-dd-yyyy'), $Component, $Type, $PID
+        Add-Content -LiteralPath $file -Value $line -Encoding UTF8
+    } catch { }
+}
 $MaxOutputChars = 70000   # safety margin below the Run Scripts output limit
 
 # --- Helpers ----------------------------------------------------------------
@@ -177,5 +195,6 @@ while ($out.Length -gt $MaxOutputChars -and $items.Count -gt 10) {
     $out = New-Envelope -Items $items -Truncated $truncated
 }
 
+Write-TKLog -Message ('Software-Get: {0} of {1} ARP entries, {2} applications, envelope {3} chars, truncated={4}' -f $items.Count, $sorted.Count, $apps.Count, $out.Length, $truncated) -Component 'Software-Get'
 Write-Output $out
 exit 0

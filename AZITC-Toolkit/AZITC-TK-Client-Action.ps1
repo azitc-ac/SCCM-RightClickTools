@@ -33,6 +33,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $SchemaVersion = 1
 
+# --- Toolkit log: CMTrace format, in a subfolder of the client's log folder ---------------
+$TKLogDir = Join-Path -Path $env:windir -ChildPath 'CCM\Logs'
+try { $tkCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global' -ErrorAction Stop; if ($tkCfg.LogDirectory) { $TKLogDir = [string]$tkCfg.LogDirectory } } catch { }
+$TKLogDir = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit'
+function Write-TKLog {
+    # Type: 1 info, 2 warning, 3 error - the colours CMTrace uses.
+    param([string]$Message, [string]$Component = 'AZITC-TK', [int]$Type = 1)
+    try {
+        if (-not (Test-Path -LiteralPath $TKLogDir)) { New-Item -ItemType Directory -Path $TKLogDir -Force | Out-Null }
+        $file = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit.log'
+        if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).Length -gt 2MB) { Move-Item -LiteralPath $file -Destination ($file -replace '\.log$', '.lo_') -Force }
+        $now = Get-Date
+        $bias = -[int]([TimeZoneInfo]::Local.GetUtcOffset($now).TotalMinutes)
+        $line = '<![LOG[{0}]LOG]!><time="{1}{2}" date="{3}" component="{4}" context="" type="{5}" thread="{6}" file="">' -f $Message, $now.ToString('HH:mm:ss.fff'), ('{0:+000;-000}' -f $bias), $now.ToString('MM-dd-yyyy'), $Component, $Type, $PID
+        Add-Content -LiteralPath $file -Value $line -Encoding UTF8
+    } catch { }
+}
+
 $schedules = @{
     MachinePolicy      = @('{00000000-0000-0000-0000-000000000021}', '{00000000-0000-0000-0000-000000000022}')
     AppDeploymentEval  = @('{00000000-0000-0000-0000-000000000121}')
@@ -73,5 +91,7 @@ foreach ($name in $order) {
 }
 if ($exit -ne 0) { $result.Error = 'One or more schedules could not be triggered.' }
 
+$lvl = 1; if ($exit -ne 0) { $lvl = 3 }
+Write-TKLog -Message ('Client-Action {0}: triggered [{1}] failed [{2}]' -f $Action, ($result.Triggered -join '; '), ($result.Failed -join '; ')) -Component 'Client-Action' -Type $lvl
 $result | ConvertTo-Json -Depth 3 -Compress | Write-Output
 exit $exit

@@ -26,6 +26,24 @@
 
 $ErrorActionPreference = 'Stop'
 $SchemaVersion = 1
+
+# --- Toolkit log: CMTrace format, in a subfolder of the client's log folder ---------------
+$TKLogDir = Join-Path -Path $env:windir -ChildPath 'CCM\Logs'
+try { $tkCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global' -ErrorAction Stop; if ($tkCfg.LogDirectory) { $TKLogDir = [string]$tkCfg.LogDirectory } } catch { }
+$TKLogDir = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit'
+function Write-TKLog {
+    # Type: 1 info, 2 warning, 3 error - the colours CMTrace uses.
+    param([string]$Message, [string]$Component = 'AZITC-TK', [int]$Type = 1)
+    try {
+        if (-not (Test-Path -LiteralPath $TKLogDir)) { New-Item -ItemType Directory -Path $TKLogDir -Force | Out-Null }
+        $file = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit.log'
+        if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).Length -gt 2MB) { Move-Item -LiteralPath $file -Destination ($file -replace '\.log$', '.lo_') -Force }
+        $now = Get-Date
+        $bias = -[int]([TimeZoneInfo]::Local.GetUtcOffset($now).TotalMinutes)
+        $line = '<![LOG[{0}]LOG]!><time="{1}{2}" date="{3}" component="{4}" context="" type="{5}" thread="{6}" file="">' -f $Message, $now.ToString('HH:mm:ss.fff'), ('{0:+000;-000}' -f $bias), $now.ToString('MM-dd-yyyy'), $Component, $Type, $PID
+        Add-Content -LiteralPath $file -Value $line -Encoding UTF8
+    } catch { }
+}
 $MaxOutputChars = 70000
 
 function ConvertTo-CompressedBase64 {
@@ -216,5 +234,6 @@ while ($out.Length -gt $MaxOutputChars) {
     $out = New-Envelope -Svc $svc -Proc $proc -Cch $cch -Truncated $trunc.ToArray()
 }
 
+Write-TKLog -Message ('Client-Get: {0} services, {1} processes, {2} cache items, reboot pending={3} [{4}], envelope {5} chars, truncated=[{6}], errors=''{7}''' -f $svc.Count, $proc.Count, $cch.Count, $reboot.Pending, ($reboot.Reasons -join '; '), $out.Length, ($trunc -join ','), ($errors -join ' | ')) -Component 'Client-Get'
 Write-Output $out
 exit 0

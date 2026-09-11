@@ -76,7 +76,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $SchemaVersion = 1
-$LogDir = Join-Path -Path $env:ProgramData -ChildPath 'AZITC\Toolkit\Logs'
+
+# --- Toolkit log: CMTrace format, in a subfolder of the client's log folder ---------------
+$TKLogDir = Join-Path -Path $env:windir -ChildPath 'CCM\Logs'
+try { $tkCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global' -ErrorAction Stop; if ($tkCfg.LogDirectory) { $TKLogDir = [string]$tkCfg.LogDirectory } } catch { }
+$TKLogDir = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit'
+function Write-TKLog {
+    # Type: 1 info, 2 warning, 3 error - the colours CMTrace uses.
+    param([string]$Message, [string]$Component = 'AZITC-TK', [int]$Type = 1)
+    try {
+        if (-not (Test-Path -LiteralPath $TKLogDir)) { New-Item -ItemType Directory -Path $TKLogDir -Force | Out-Null }
+        $file = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit.log'
+        if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).Length -gt 2MB) { Move-Item -LiteralPath $file -Destination ($file -replace '\.log$', '.lo_') -Force }
+        $now = Get-Date
+        $bias = -[int]([TimeZoneInfo]::Local.GetUtcOffset($now).TotalMinutes)
+        $line = '<![LOG[{0}]LOG]!><time="{1}{2}" date="{3}" component="{4}" context="" type="{5}" thread="{6}" file="">' -f $Message, $now.ToString('HH:mm:ss.fff'), ('{0:+000;-000}' -f $bias), $now.ToString('MM-dd-yyyy'), $Component, $Type, $PID
+        Add-Content -LiteralPath $file -Value $line -Encoding UTF8
+    } catch { }
+}
+$LogDir = $TKLogDir   # msiexec logs go next to the toolkit log
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $SuccessCodes = @(0, 1605, 1614, 1641, 3010)
 
@@ -135,6 +153,8 @@ $result = [ordered]@{
 
 function Complete-Script {
     param([int]$Code)
+    $lvl = 1; if ($Code -eq 1) { $lvl = 3 } elseif ($Code -eq 2) { $lvl = 2 }
+    Write-TKLog -Message ('Software-Action {0} ''{1}'' [{2}]: strategy={3} executed={4} exit={5} ({6}) stillPresent={7} reEvaluate={8} error=''{9}'' -> script exit {10}' -f $Action, $result.Name, $Key, $result.Strategy, $result.Executed, $result.ExitCode, $result.ExitMeaning, $result.StillPresent, $result.ReEvaluateTriggered, $result.Error, $Code) -Component 'Software-Action' -Type $lvl
     $result | ConvertTo-Json -Depth 4 -Compress | Write-Output
     exit $Code
 }
@@ -238,6 +258,7 @@ if (-not (Test-Path -LiteralPath $regPath)) {
 
 $p = Get-ItemProperty -LiteralPath $regPath
 $leaf = Split-Path -Path $Key -Leaf
+Write-TKLog -Message ('Software-Action {0} requested for ''{1}'' [{2}] timeout={3}min kill={4} reEvaluate={5} extraArgs=''{6}''' -f $Action, [string]$p.DisplayName, $Key, $TimeoutMin, $KillRunning, $ReEvaluate, $ExtraArgs) -Component 'Software-Action'
 
 $result.Name            = [string]$p.DisplayName
 $result.Version         = [string]$p.DisplayVersion

@@ -147,7 +147,21 @@ $connectScript = {
 
 $softwareScript = {
     param($DeviceName)
-    Get-TKSoftware -DeviceName $DeviceName
+    $sw = Get-TKSoftware -DeviceName $DeviceName
+    # The client knows only the Software Center title; the console name and the superseded
+    # flag come from the site, keyed by ModelName = CCM_Application.Id.
+    $site = @{}
+    try { $site = Get-TKSiteApplications } catch { }
+    foreach ($a in $sw.Apps) {
+        $info = $null
+        if ($site.ContainsKey([string]$a.Id)) { $info = $site[[string]$a.Id] }
+        $cn = ''; $sup = $false; $dep = 0
+        if ($info) { $cn = $info.ConsoleName; $sup = $info.IsSuperseded; $dep = $info.Deployments }
+        $a | Add-Member -NotePropertyName ConsoleName -NotePropertyValue $cn -Force
+        $a | Add-Member -NotePropertyName Superseded -NotePropertyValue $sup -Force
+        $a | Add-Member -NotePropertyName Deployments -NotePropertyValue $dep -Force
+    }
+    $sw
 }
 
 $actionScript = {
@@ -307,13 +321,16 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                 <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
                   <DataGrid.Columns>
-                    <DataGridTextColumn Header="Application" Binding="{Binding Name}" Width="3*"/>
+                    <DataGridTextColumn Header="Application (console)" Binding="{Binding ConsoleName}" Width="3*"/>
+                    <DataGridTextColumn Header="Software Center title" Binding="{Binding Name}" Width="2*"/>
                     <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="140"/>
                     <DataGridTextColumn Header="Install state" Binding="{Binding InstallState}" Width="100"/>
                     <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedState}" Width="90"/>
                     <DataGridTextColumn Header="Eval" Binding="{Binding EvaluationState}" Width="45"/>
                     <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
-                    <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="140"/>
+                    <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="130"/>
+                    <DataGridTextColumn Header="Superseded" Binding="{Binding Superseded}" Width="75"/>
+                    <DataGridTextColumn Header="Depl." Binding="{Binding Deployments}" Width="45"/>
                     <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="2*"/>
                   </DataGrid.Columns>
                 </DataGrid>
@@ -470,7 +487,7 @@ $titleSite = ''
 if ($SiteCode) { $titleSite = " [$SiteCode]" }
 $window.Title = "AZITC Toolkit $toolVersion - $DeviceName$titleSite - $SmsProvider"
 $ui.HeaderDevice.Text = $DeviceName
-foreach ($n in 'AppEnforce.log', 'AppDiscovery.log', 'AppIntentEval.log', 'CAS.log', 'ContentTransferManager.log', 'DataTransferService.log', 'PolicyAgent.log', 'CcmExec.log', 'ClientIDManagerStartup.log', 'ccmnotificationagent.log', 'Scripts.log', 'UpdatesDeployment.log', 'WUAHandler.log', 'C:\Windows\Logs\Software\*') { $null = $ui.LogName.Items.Add($n) }
+foreach ($n in 'AppEnforce.log', 'AppDiscovery.log', 'AppIntentEval.log', 'CAS.log', 'ContentTransferManager.log', 'DataTransferService.log', 'PolicyAgent.log', 'CcmExec.log', 'ClientIDManagerStartup.log', 'ccmnotificationagent.log', 'Scripts.log', 'UpdatesDeployment.log', 'WUAHandler.log', 'AZITC-Toolkit\AZITC-Toolkit.log', 'AZITC-Toolkit\*.log', 'C:\Windows\Logs\Software\*') { $null = $ui.LogName.Items.Add($n) }
 $ui.LogName.SelectedIndex = 0
 
 # ---------------------------------------------------------------------------
@@ -588,29 +605,37 @@ function ConvertTo-SoftwareTables {
         $r['InstallDate'] = [string]$i.InstallDate; $r['Scope'] = [string]$i.Scope; $r['Arch'] = [string]$i.Arch; $r['Key'] = [string]$i.Key
         $r['IsMsi'] = [bool]$i.IsMsi; $r['HasQuietString'] = [bool]$i.HasQuietString; $r['HasUninstall'] = [bool]$i.HasUninstall; $r['RepairPossible'] = [bool]$i.RepairPossible
         $r['SizeMB'] = [double]$i.SizeMB
-        # Heuristic: the ARP name starts with the application's name (or the other way round),
-        # longest application name wins. Labelled as such in the column header.
-        $best = $null
+        # Heuristic: the ARP name starts with the application's Software Center title (or the
+        # other way round). Among several candidates the score decides: version agreement 4,
+        # installed on the client 2, has a deadline 1, not superseded 1; ties go to the higher
+        # version. Labelled as heuristic in the column header.
+        $best = $null; $bestScore = -1
         foreach ($a in $apps) {
             $an = [string]$a.N
             if (-not $an) { continue }
             $n = [string]$i.Name
-            if ($n.StartsWith($an, [System.StringComparison]::OrdinalIgnoreCase) -or $an.StartsWith($n, [System.StringComparison]::OrdinalIgnoreCase)) {
-                if ($null -eq $best -or $an.Length -gt ([string]$best.N).Length) { $best = $a }
-            }
-        }
-        if ($best) { $r['CMApp'] = '{0} {1} - {2}/{3}' -f $best.N, $best.SV, $best.IS, $best.RS } else { $r['CMApp'] = '' }
+            if (-not ($n.StartsWith($an, [System.StringComparison]::OrdinalIgnoreCase) -or $an.StartsWith($n, [System.StringComparison]::OrdinalIgnoreCase))) { continue }
+            $score = $an.Length / 1000.0
+            $sv = [string]$a.SV; $iv = [string]$i.Version
+            if ($sv -and $iv -and ($iv.StartsWith($sv, [System.StringComparison]::OrdinalIgnoreCase) -or $sv.StartsWith($iv, [System.StringComparison]::OrdinalIgnoreCase))) { $score += 4 }
+            if ([string]$a.IS -eq 'Installed') { $score += 2 }
+            if ([string]$a.DL) { $score += 1 }
+            if (-not [bool]$a.Superseded) { $score += 1 }
+            if ($score -gt $bestScore) { $best = $a; $bestScore = $score }
+        }        if ($best) { $label = [string]$best.ConsoleName; if (-not $label) { $label = '{0} {1}' -f $best.N, $best.SV }; $r['CMApp'] = '{0} - {1}/{2}' -f $label, $best.IS, $best.RS } else { $r['CMApp'] = '' }
         $t.Rows.Add($r)
     }
 
     $a2 = New-Object System.Data.DataTable 'Apps'
-    foreach ($c in 'Name', 'Version', 'InstallState', 'ResolvedState', 'Deadline', 'AllowedActions', 'Publisher', 'Id') { $null = $a2.Columns.Add($c, [string]) }
+    foreach ($c in 'Name', 'ConsoleName', 'Version', 'InstallState', 'ResolvedState', 'Deadline', 'AllowedActions', 'Publisher', 'Id') { $null = $a2.Columns.Add($c, [string]) }
+    $null = $a2.Columns.Add('Superseded', [bool]); $null = $a2.Columns.Add('Deployments', [int])
     $null = $a2.Columns.Add('EvaluationState', [int])
     foreach ($a in $apps) {
         $r = $a2.NewRow()
         $r['Name'] = [string]$a.N; $r['Version'] = [string]$a.SV; $r['InstallState'] = [string]$a.IS; $r['ResolvedState'] = [string]$a.RS
         $r['Deadline'] = [string]$a.DL; $r['AllowedActions'] = (@($a.AA) -join ', '); $r['Publisher'] = [string]$a.Pub; $r['Id'] = [string]$a.Id
         $r['EvaluationState'] = [int]$a.ES
+        $r['ConsoleName'] = [string]$a.ConsoleName; $r['Superseded'] = [bool]$a.Superseded; $r['Deployments'] = [int]$a.Deployments
         $a2.Rows.Add($r)
     }
     return @{ Software = $t; Apps = $a2 }
@@ -914,7 +939,7 @@ $window.Add_Closed({
     if ($AutoCloseSeconds -gt 0) {
         $rows = 0; if ($script:SoftwareTable) { $rows = $script:SoftwareTable.Rows.Count }
         $apps = 0; if ($script:AppsTable) { $apps = $script:AppsTable.Rows.Count }
-        [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) services=$(if ($script:ServicesTable) { $script:ServicesTable.Rows.Count } else { 0 }) processes=$(if ($script:ProcessesTable) { $script:ProcessesTable.Rows.Count } else { 0 }) handlerError='$($script:LastHandlerError)'")
+        [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) sevenzip='$((($script:SoftwareTable.Select("Name LIKE '7-Zip%'") | ForEach-Object { $_["CMApp"] }) -join " ; "))' services=$(if ($script:ServicesTable) { $script:ServicesTable.Rows.Count } else { 0 }) processes=$(if ($script:ProcessesTable) { $script:ProcessesTable.Rows.Count } else { 0 }) handlerError='$($script:LastHandlerError)'")
     }
     if ($script:Job) { try { $script:Job.PowerShell.Stop() } catch { } }
     try { $script:Runspace.Close() } catch { }

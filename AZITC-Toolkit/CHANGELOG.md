@@ -1,5 +1,37 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-11 (night, second round) - what the first screenshot taught, and a toolkit log on the client
+
+The user's first look at the window raised three questions; all three had answers in the
+data, two of them needed code.
+
+* **Two 7-Zip rows in the ConfigMgr applications grid, one NotInstalled.** The site holds
+  `7-Zip - 24.9.0.0` with `IsSuperseded = True` and no deployment; `7-Zip - 26.02` supersedes
+  it. The client receives the superseded application's policy along with the superseding one
+  (it has to detect it), so `CCM_Application` lists it with `ResolvedState None`,
+  `EvaluationState 2` (not required), no deadline. Correct, not a leftover. The grid now shows
+  a **Superseded** column and the deployment count so this reads as what it is.
+* **"7-Zip" instead of "7-Zip - 26.02".** `CCM_Application.Name` is the Software Center title
+  (`DisplayInfo/Title`), not the console title. The console name is now looked up on the site
+  by `ModelName` (= `CCM_Application.Id`) through `Get-TKSiteApplications` and shown as
+  *Application (console)*; the Software Center title keeps its own column.
+* **The heuristic match pointed at 24.9.0.0.** Both applications carry the same Software
+  Center title, and the first one won. The match now scores: version agreement 4, installed 2,
+  has a deadline 1, not superseded 1; the label uses the console name. CLIENT01: `7-Zip 26.02 (x64)`
+  -> `7-Zip - 26.02 - Installed/Installed`.
+
+**Toolkit log on the client.** Every client script writes one CMTrace-format line per run
+(request and result, with the exit code and any error) to
+`<client log folder>\AZITC-Toolkit\AZITC-Toolkit.log` - `C:\Windows\CCM\Logs\AZITC-Toolkit`
+on a workstation, next to the client's own logs, rotated at 2 MB to `.lo_`. The msiexec logs
+of Software-Action go into the same folder (they used to go to ProgramData). Log-Get serves the
+folder because it lies under the client's log folder; the window's log list offers
+`AZITC-Toolkit\AZITC-Toolkit.log`. Verified on CLIENT01 by reading the log back through Log-Get
+after a Get and an Inspect.
+
+All seven scripts were updated in the site (Get v3, Action v3, Log-Get v3, the rest v2) and
+re-approved; the console copy is current.
+
 ## 2026-09-11 (late) - Step 4: CM application actions, client overview, services / processes / cache
 
 Three more Run Scripts, all registered through `Register-TKScript`, approved, run on CLIENT01, and

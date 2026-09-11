@@ -48,6 +48,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $SchemaVersion = 1
 
+# --- Toolkit log: CMTrace format, in a subfolder of the client's log folder ---------------
+$TKLogDir = Join-Path -Path $env:windir -ChildPath 'CCM\Logs'
+try { $tkCfg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\CCM\Logging\@Global' -ErrorAction Stop; if ($tkCfg.LogDirectory) { $TKLogDir = [string]$tkCfg.LogDirectory } } catch { }
+$TKLogDir = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit'
+function Write-TKLog {
+    # Type: 1 info, 2 warning, 3 error - the colours CMTrace uses.
+    param([string]$Message, [string]$Component = 'AZITC-TK', [int]$Type = 1)
+    try {
+        if (-not (Test-Path -LiteralPath $TKLogDir)) { New-Item -ItemType Directory -Path $TKLogDir -Force | Out-Null }
+        $file = Join-Path -Path $TKLogDir -ChildPath 'AZITC-Toolkit.log'
+        if ((Test-Path -LiteralPath $file) -and (Get-Item -LiteralPath $file).Length -gt 2MB) { Move-Item -LiteralPath $file -Destination ($file -replace '\.log$', '.lo_') -Force }
+        $now = Get-Date
+        $bias = -[int]([TimeZoneInfo]::Local.GetUtcOffset($now).TotalMinutes)
+        $line = '<![LOG[{0}]LOG]!><time="{1}{2}" date="{3}" component="{4}" context="" type="{5}" thread="{6}" file="">' -f $Message, $now.ToString('HH:mm:ss.fff'), ('{0:+000;-000}' -f $bias), $now.ToString('MM-dd-yyyy'), $Component, $Type, $PID
+        Add-Content -LiteralPath $file -Value $line -Encoding UTF8
+    } catch { }
+}
+
 # CCM_Application.EvaluationState, from the client SDK documentation of the class. Values
 # above 13 exist (waiting for user session, reboot, ...) and are reported by number only.
 $EvalText = @{
@@ -91,6 +109,9 @@ $result = [ordered]@{
 
 function Complete-Script {
     param([int]$Code)
+    $lvl = 1; if ($Code -eq 1) { $lvl = 3 } elseif ($Code -eq 2) { $lvl = 2 }
+    $afterText = ''; if ($result.After) { $afterText = '{0}/{1}' -f $result.After.InstallState, $result.After.EvaluationState }
+    Write-TKLog -Message ('CMApp-Action {0} ''{1} {2}'' rev {3}: method={4} job={5} reached={6} timedOut={7} after={8} {9}s error=''{10}'' -> script exit {11}' -f $Action, $result.Name, $result.Version, $result.Revision, $result.MethodReturn, $result.JobId, $result.Reached, $result.TimedOut, $afterText, $result.DurationSec, $result.Error, $Code) -Component 'CMApp-Action' -Type $lvl
     $result | ConvertTo-Json -Depth 4 -Compress | Write-Output
     exit $Code
 }
@@ -134,6 +155,7 @@ $result.Version = [string]$app.SoftwareVersion
 $result.Revision = [int]$app.Revision
 $result.AllowedActions = @($app.AllowedActions)
 $result.Before = Get-State -App $app
+Write-TKLog -Message ('CMApp-Action {0} requested for ''{1} {2}'' rev {3} ({4}), before {5}/{6}, allowed [{7}]' -f $Action, $result.Name, $result.Version, $result.Revision, $AppId, $result.Before.InstallState, $result.Before.EvaluationState, ($result.AllowedActions -join ',')) -Component 'CMApp-Action'
 
 if ($result.AllowedActions -notcontains $Action) {
     $result.Error = "Action '$Action' is not in AllowedActions ($($result.AllowedActions -join ', ')) for this application on this client."

@@ -755,6 +755,33 @@ function Invoke-TKSoftwareAction {
     return $parsed
 }
 
+function Get-TKSiteApplications {
+    <#
+    .SYNOPSIS
+        The site's applications keyed by ModelName - the value the client reports as
+        CCM_Application.Id - with the console name, superseded/superseding flags and the
+        deployment count. Lets the window show the name the console shows: the client only
+        knows the Software Center title.
+    #>
+    [CmdletBinding()]
+    param()
+    $r = Invoke-TKRest -Method Get -Route wmi -Path 'SMS_Application?$filter=IsLatest eq true&$select=ModelName,LocalizedDisplayName,SoftwareVersion,CIVersion,IsSuperseded,IsSuperseding,IsDeployed,NumberOfDeployments,IsEnabled'
+    $map = @{}
+    foreach ($a in @($r.value)) {
+        $map[[string]$a.ModelName] = [pscustomobject]@{
+            ConsoleName    = [string]$a.LocalizedDisplayName
+            Version        = [string]$a.SoftwareVersion
+            Revision       = [int]$a.CIVersion
+            IsSuperseded   = [bool]$a.IsSuperseded
+            IsSuperseding  = [bool]$a.IsSuperseding
+            IsDeployed     = [bool]$a.IsDeployed
+            Deployments    = [int]$a.NumberOfDeployments
+            IsEnabled      = [bool]$a.IsEnabled
+        }
+    }
+    return $map
+}
+
 function Invoke-TKCMAppAction {
     <#
     .SYNOPSIS
