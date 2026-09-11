@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# the hook is a shell script and VERSION is read by a script
+.githooks/* text eol=lf
+AZITC-Toolkit/VERSION text eol=lf

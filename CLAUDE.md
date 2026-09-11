@@ -27,4 +27,7 @@ the handover log - dated, with what was actually run and measured.
   WMI class definition, SMSProv.log, the SQL objects) and write down where it came from.
 - Scratch scripts in a tool folder are prefixed `_` and are ignored by git; delete them when
   the finding has been written into the CHANGELOG.
+- Every commit raises `AZITC-ToolkitVERSION` (last number) through `.githooks/pre-commit`; the
+  window shows it in its title. Needs `git config core.hooksPath .githooks` once per clone
+  (set on LAB01). A deliberate jump: edit and stage VERSION yourself.
 - Commit at milestones; push when asked.

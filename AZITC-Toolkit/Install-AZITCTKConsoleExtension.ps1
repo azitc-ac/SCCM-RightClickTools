@@ -65,7 +65,7 @@ if ($Uninstall) {
 # --- files ------------------------------------------------------------------
 
 if (-not (Test-Path -LiteralPath $extDir)) { New-Item -ItemType Directory -Path $extDir -Force | Out-Null }
-foreach ($n in 'AZITC-TK.ps1', 'AZITC-TK-AdminService.ps1') {
+foreach ($n in 'AZITC-TK.ps1', 'AZITC-TK-AdminService.ps1', 'VERSION') {
     $src = Join-Path -Path $PSScriptRoot -ChildPath $n
     if (-not (Test-Path -LiteralPath $src)) { throw "Missing: $src" }
     Copy-Item -LiteralPath $src -Destination (Join-Path $extDir $n) -Force

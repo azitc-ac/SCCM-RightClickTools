@@ -45,7 +45,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$toolVersion = '0.1'
+# The version lives in VERSION next to this file; a pre-commit hook raises it with every commit.
+$toolVersion = '0.0'
+$versionFile = Join-Path -Path $PSScriptRoot -ChildPath 'VERSION'
+if (Test-Path -LiteralPath $versionFile) { $fileVersion = (Get-Content -LiteralPath $versionFile -TotalCount 1).Trim(); if ($fileVersion) { $toolVersion = $fileVersion } }
 $libraryPath = Join-Path -Path $PSScriptRoot -ChildPath 'AZITC-TK-AdminService.ps1'
 if (-not (Test-Path -LiteralPath $libraryPath)) { throw "Library not found: $libraryPath" }
 if (-not $DeviceName -and $ResourceId -eq 0) { throw 'Give -DeviceName or -ResourceId.' }

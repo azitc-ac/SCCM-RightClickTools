@@ -1,0 +1,17 @@
+#!/bin/sh
+# Raise the last number in AZITC-Toolkit/VERSION with every commit; the window shows it in
+# its title. A VERSION already staged (a deliberate jump) is left alone.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+cd "$(git rev-parse --show-toplevel)" || exit 1
+f=AZITC-Toolkit/VERSION
+if git diff --cached --quiet -- "$f"; then
+    v=$(tr -d '\r\n' < "$f")
+    base=${v%.*}
+    patch=${v##*.}
+    case "$patch" in
+        ''|*[!0-9]*) echo "pre-commit: $f '$v' does not end in a number" >&2; exit 1 ;;
+    esac
+    printf '%s.%s\n' "$base" $((patch + 1)) > "$f"
+    git add "$f"
+fi
