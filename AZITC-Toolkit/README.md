@@ -16,7 +16,8 @@ troubleshooting), not a warning.
 | --- | --- | --- |
 | `AZITC-TK-Software-Get.ps1` | on the client, as a Run Script, no parameters | Enumerates Add/Remove Programs (HKLM x64/x86, loaded user hives) and the `CCM_Application` list. Emits one JSON envelope whose payload is gzip+base64, kept under the Run Scripts output limit; truncates and says so if it has to. Console timeout 300 s. |
 | `AZITC-TK-Software-Action.ps1` | on the client, as a Run Script | Parameters `Action` (Inspect/Uninstall/Repair), `Key`, `ExtraArgs`, `TimeoutMin`, `KillRunning`, `ReEvaluate`. Strategy cascade MSI -> QuietUninstallString -> Inno/NSIS -> ExtraArgs -> Unknown, timeout with process-tree kill, exit-code mapping, post-verification, optional trigger of schedule `…121`. Per-user entries are reported, never executed. Console timeout 1800 s. |
-| `AZITC-TK-AdminService.ps1` | on the admin workstation, dot-sourced | The transport: `Connect-TKAdminService`, `Get-TKDevice`, `Get-TKScript`, `Start-TKScript` / `Invoke-TKScript`, `ConvertFrom-TKEnvelope`, `Get-TKSoftware`, `Invoke-TKSoftwareAction`. Usage block at the end of the file. |
+| `AZITC-TK-Log-Get.ps1` | on the client, as a Run Script | Parameters `LogName` (name, path or wildcard), `Lines` (1..500), `Pattern` (regex). Tail of a client log from the served folders only (the client's log folder, the toolkit's, PSADT's), ConfigMgr entries reduced to `date time  component  message`. Console timeout 120 s. |
+| `AZITC-TK-AdminService.ps1` | on the admin workstation, dot-sourced | The transport: `Connect-TKAdminService`, `Get-TKDevice`, `Get-TKScript`, `Start-TKScript` / `Invoke-TKScript`, `ConvertFrom-TKEnvelope`, `Get-TKSoftware`, `Invoke-TKSoftwareAction`, `Get-TKLog`, plus `Register-TKScript` / `Approve-TKScript` for putting a script into the Scripts node with its parameter definition. Usage block at the end of the file. |
 
 Everything is Windows PowerShell 5.1; files are UTF-8 with BOM, CRLF.
 
@@ -64,6 +65,6 @@ refused; the bound action `SMS_Scripts(<guid>)/AdminService.UpdateScript` can.
 
 ## Status
 
-See `CHANGELOG.md`. Step 1 (verify the API shapes) is done, Step 2 (import, approve, run
-end-to-end against the lab device) is in progress, Step 3 (GUI) and 4 (more scripts) are not
-started.
+See `CHANGELOG.md`. Steps 1 and 2 are done - the three scripts are in the site, approved, and
+have run end to end against the lab device (Get, Inspect, Uninstall+ReEvaluate, log tail).
+Step 3 (GUI) is not started; of Step 4 the log tail exists.

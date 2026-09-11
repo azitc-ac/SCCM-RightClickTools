@@ -472,20 +472,156 @@ function ConvertFrom-TKEnvelope {
     $text = $sr.ReadToEnd()
     $sr.Close(); $gz.Close(); $ms.Close()
     $payload = $text | ConvertFrom-Json
+    # Kind = Software fills Items/Apps/Users, Kind = Log fills Lines; Payload is the whole thing.
+    $get = { param($obj, $name) if ($obj.PSObject.Properties[$name]) { return $obj.$name } else { return $null } }
     return [pscustomobject]@{
+        Kind      = (& $get $envelope 'Kind')
         Host      = $envelope.Host
         TimeUtc   = $envelope.TimeUtc
         Count     = $envelope.Count
         Total     = $envelope.Total
         Truncated = $envelope.Truncated
-        AppError  = $envelope.AppError
-        Items     = @($payload.Items)
-        Apps      = @($payload.Apps)
-        Users     = $payload.Users
+        AppError  = (& $get $envelope 'AppError')
+        Error     = (& $get $envelope 'Error')
+        Items     = @(& $get $payload 'Items')
+        Apps      = @(& $get $payload 'Apps')
+        Users     = (& $get $payload 'Users')
+        Lines     = @(& $get $payload 'Lines')
+        Payload   = $payload
     }
 }
 
+# --- Script registration ------------------------------------------------------
+
+function Register-TKScript {
+    <#
+    .SYNOPSIS
+        Creates (or replaces) a Run Script in the Scripts node from a .ps1 file, with its
+        parameter definition, through SMS_Scripts.CreateScripts on the /wmi route - the way
+        the console does it. New-CMScript would leave ParamsDefinition empty.
+    .PARAMETER Parameters
+        One hashtable per parameter: @{ Name; Type ('System.String'|'System.Int32'|'System.Boolean');
+        Required ([bool]); Default ([string]); Values ([string[]], optional allowed values) }.
+        The order given is kept in the definition.
+    .PARAMETER Replace
+        Delete an existing script of the same name first (its approval is lost).
+    .OUTPUTS
+        The new script row (Get-TKScript).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$File,
+        [string]$Description = '',
+        [int]$Timeout = 300,
+        [string]$Version = '1',
+        [hashtable[]]$Parameters = @(),
+        [switch]$Replace
+    )
+    $existing = @((Invoke-TKRest -Method Get -Path ("Script?`$filter=ScriptName eq '{0}'" -f $Name)).value)
+    if ($existing.Count -gt 0) {
+        if (-not $Replace) { throw "Script '$Name' already exists ($($existing[0].ScriptGuid)). Use -Replace to recreate it." }
+        foreach ($e in $existing) { $null = Invoke-TKRest -Method Delete -Route wmi -Path "SMS_Scripts('$($e.ScriptGuid)')" }
+    }
+
+    # ParamsDefinition: what the validator reads (XPath in smssqlclr.dll), stored base64.
+    # ParameterlistXML: the console's stored list (ParameterType carries IsRequired there).
+    $groupGuid = [guid]::NewGuid().ToString().ToUpper()
+    $def = New-Object System.Text.StringBuilder
+    $lst = New-Object System.Text.StringBuilder
+    $null = $def.Append('<ScriptParameters>')
+    $null = $lst.Append('<ScriptParameters>')
+    foreach ($p in $Parameters) {
+        $pName = [string]$p.Name
+        $pType = 'System.String'; if ($p.ContainsKey('Type') -and $p.Type) { $pType = [string]$p.Type }
+        $pReq = 'false'; if ($p.ContainsKey('Required') -and $p.Required) { $pReq = 'true' }
+        $pDef = ''; if ($p.ContainsKey('Default') -and $null -ne $p.Default) { $pDef = [string]$p.Default }
+        $esc = [System.Security.SecurityElement]::Escape($pDef)
+        $null = $def.AppendFormat('<ScriptParameter Name="{0}" FriendlyName="{0}" Type="{1}" Description="" IsRequired="{2}" IsHidden="false" DefaultValue="{3}">', $pName, $pType, $pReq, $esc)
+        if ($p.ContainsKey('Values') -and @($p.Values).Count -gt 0) {
+            $null = $def.Append('<Values>')
+            foreach ($v in @($p.Values)) { $null = $def.AppendFormat('<Value>{0}</Value>', [System.Security.SecurityElement]::Escape([string]$v)) }
+            $null = $def.Append('</Values>')
+        }
+        $null = $def.Append('<Validators /></ScriptParameter>')
+        $reqText = 'False'; if ($pReq -eq 'true') { $reqText = 'True' }
+        $null = $lst.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="{2}" ParameterValue="{3}"/>', $groupGuid, $pName, $reqText, $esc)
+    }
+    $null = $def.Append('</ScriptParameters>')
+    $null = $lst.Append('</ScriptParameters>')
+
+    $bytes = [System.IO.File]::ReadAllBytes($File)
+    $guid = [guid]::NewGuid().ToString().ToUpper()
+    $body = @{
+        ScriptGuid        = $guid
+        ScriptVersion     = $Version
+        ScriptName        = $Name
+        ScriptDescription = $Description
+        Author            = ''
+        ScriptType        = 0
+        ApprovalState     = 0
+        Approver          = ''
+        Comment           = ''
+        ParamsDefinition  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($def.ToString()))
+        ParameterlistXML  = $lst.ToString()
+        Script            = [Convert]::ToBase64String($bytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+        Timeout           = $Timeout
+    }
+    if ($Parameters.Count -eq 0) { $body['ParamsDefinition'] = ''; $body['ParameterlistXML'] = '' }
+    $r = Invoke-TKRest -Method Post -Route wmi -Path 'SMS_Scripts.CreateScripts' -Body $body
+    if ($r -and $r.PSObject.Properties['ReturnValue'] -and [int]$r.ReturnValue -ne 0) { throw "CreateScripts returned $($r.ReturnValue)." }
+    Write-Verbose "Created '$Name' as $guid (version $Version, timeout $Timeout, $($Parameters.Count) parameter(s))"
+    return (Get-TKScript -Name $Name -WarningAction SilentlyContinue)
+}
+
+function Approve-TKScript {
+    <#
+    .SYNOPSIS
+        Sets ApprovalState 3 through SMS_Scripts.UpdateApprovalState. Works only where the
+        hierarchy does not demand a second approver (TwoKeyApproval = 0) or the caller is not
+        the author.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$ScriptGuid, [string]$Comment = 'Approved by AZITC Toolkit')
+    $approver = "$env:USERDOMAIN\$env:USERNAME"
+    $r = Invoke-TKRest -Method Post -Route wmi -Path "SMS_Scripts('$ScriptGuid')/AdminService.UpdateApprovalState" -Body @{ ApprovalState = '3'; Approver = $approver; Comment = $Comment }
+    if ($r -and $r.PSObject.Properties['ReturnValue'] -and [int]$r.ReturnValue -ne 0) { throw "UpdateApprovalState returned $($r.ReturnValue)." }
+    return (@((Invoke-TKRest -Method Get -Route wmi -Path "SMS_Scripts('$ScriptGuid')").value)[0])
+}
+
 # --- Convenience ------------------------------------------------------------
+
+function Get-TKLog {
+    <#
+    .SYNOPSIS
+        Runs AZITC-TK-Log-Get on a device: the last lines of a client log, reduced to
+        "date time  component  message".
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeviceName,
+        [Parameter(Mandatory = $true)][string]$LogName,
+        [int]$Lines = 100,
+        [string]$Pattern = '',
+        [string]$ScriptName = 'AZITC-TK-Log-Get',
+        [int]$TimeoutSec = 180
+    )
+    $dev = Get-TKDevice -Name $DeviceName
+    $scr = Get-TKScript -Name $ScriptName
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters @{ LogName = $LogName; Lines = $Lines; Pattern = $Pattern } -TimeoutSec $TimeoutSec
+    $envelope = ConvertFrom-TKEnvelope -Json $res.Output
+    if ($envelope.Error) { Write-Warning "Log-Get on $($envelope.Host): $($envelope.Error)" }
+    if ($envelope.Truncated) { Write-Warning "Tail shortened to fit the output limit: $($envelope.Count) lines returned." }
+    return [pscustomobject]@{
+        Host        = $envelope.Host
+        Path        = $envelope.Payload.Path
+        Matched     = $envelope.Payload.Matched
+        Lines       = $envelope.Lines
+        Error       = $envelope.Error
+        OperationId = $res.OperationId
+        ExitCode    = $res.ExitCode
+    }
+}
 
 function Get-TKSoftware {
     <#
