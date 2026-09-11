@@ -219,21 +219,56 @@ function Get-TKSha256Hex {
     return (($hash | ForEach-Object { $_.ToString($format) }) -join '')
 }
 
+function Get-TKScriptParameterDefinition {
+    <#
+    .SYNOPSIS
+        Name -> .NET type name of every parameter the script declares, read from its
+        ParamsDefinition (stored base64 of the XML; older rows may hold the XML as is).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$ScriptGuid)
+    $types = @{}
+    $r = Invoke-TKRest -Method Get -Route wmi -Path "SMS_Scripts('$ScriptGuid')"
+    $row = @($r.value)[0]
+    $def = ''
+    if ($row -and $row.PSObject.Properties['ParamsDefinition']) { $def = [string]$row.ParamsDefinition }
+    if ([string]::IsNullOrWhiteSpace($def)) { return $types }
+    if (-not $def.TrimStart().StartsWith('<')) {
+        try { $def = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($def)) } catch { return $types }
+    }
+    try {
+        $xml = [xml]$def
+        foreach ($p in $xml.SelectNodes('/ScriptParameters//ScriptParameter')) { $types[[string]$p.GetAttribute('Name')] = [string]$p.GetAttribute('Type') }
+    } catch { }
+    return $types
+}
+
 function New-TKScriptContent {
     <#
     .SYNOPSIS
         The base64 Param for InitiateClientOperationEx, built the way the console builds it.
+        ParameterType has to be the .NET type name from the script's definition - the
+        validator rejects anything else ("Unsupported Type").
     #>
     param(
         [Parameter(Mandatory = $true)]$Script,          # row from Get-TKScript (ScriptGuid, ScriptVersion, ScriptType, ScriptHash)
-        [hashtable]$Parameters = @{}
+        [hashtable]$Parameters = @{},
+        [hashtable]$ParameterTypes = @{}                # from Get-TKScriptParameterDefinition; inferred from the value when missing
     )
     $groupGuid = [guid]::NewGuid().ToString().ToUpper()
     $sb = New-Object System.Text.StringBuilder
     $null = $sb.Append('<ScriptParameters>')
     foreach ($name in ($Parameters.Keys | Sort-Object)) {
-        $value = [System.Security.SecurityElement]::Escape([string]$Parameters[$name])
-        $null = $sb.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="" ParameterValue="{2}"/>', $groupGuid, $name, $value)
+        $raw = $Parameters[$name]
+        $type = ''
+        if ($ParameterTypes.ContainsKey($name)) { $type = [string]$ParameterTypes[$name] }
+        if (-not $type) {
+            if ($raw -is [bool]) { $type = 'System.Boolean' }
+            elseif ($raw -is [int] -or $raw -is [long] -or $raw -is [int16] -or $raw -is [byte]) { $type = 'System.Int32' }
+            else { $type = 'System.String' }
+        }
+        $value = [System.Security.SecurityElement]::Escape([string]$raw)
+        $null = $sb.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="{2}" ParameterDataType="{2}" ParameterValue="{3}"/>', $groupGuid, $name, $type, $value)
     }
     $null = $sb.Append('</ScriptParameters>')
     $parameterXml = $sb.ToString()
@@ -244,11 +279,24 @@ function New-TKScriptContent {
 }
 
 function ConvertFrom-TKScriptOutput {
-    # ScriptOutput arrives as a JSON-encoded string: either "\"...\"" (single string) or "[\"line\",...]"
+    <#
+    .SYNOPSIS
+        Turns the stored ScriptOutput back into the text the script wrote.
+        Observed: the site keeps the JSON-escaped body of the output string WITHOUT the
+        surrounding quotes - a script that printed {"a":1} is stored as {\"a\":1}. A JSON array
+        of lines ("[\"line\",...]") is joined with newlines.
+    #>
     param([string]$ScriptOutput)
     if ([string]::IsNullOrWhiteSpace($ScriptOutput)) { return '' }
+    $trimmed = $ScriptOutput.Trim()
     $decoded = $null
-    try { $decoded = $ScriptOutput | ConvertFrom-Json } catch { return $ScriptOutput }
+    if ($trimmed.StartsWith('"') -or $trimmed.StartsWith('[')) {
+        try { $decoded = $trimmed | ConvertFrom-Json } catch { $decoded = $null }
+    }
+    if ($null -eq $decoded -and $trimmed.Contains('\"')) {
+        try { $decoded = ('"' + $trimmed + '"') | ConvertFrom-Json } catch { $decoded = $null }
+    }
+    if ($null -eq $decoded) { return $ScriptOutput }
     if ($decoded -is [string]) { return $decoded }
     if ($decoded -is [System.Array]) { return (($decoded | ForEach-Object { [string]$_ }) -join "`n") }
     return $ScriptOutput
@@ -284,12 +332,14 @@ function Start-TKScript {
             if ($start -is [int] -or $start -is [long]) { $operationId = [int]$start }
             elseif ($start -and $start.PSObject.Properties['value']) { $operationId = [int]$start.value }
         } else {
+            $types = @{}
+            if ($Parameters.Count -gt 0) { $types = Get-TKScriptParameterDefinition -ScriptGuid ([string]$Script.ScriptGuid) }
             $body = @{
                 Type                = 135
                 TargetCollectionID  = ''
                 TargetResourceIDs   = @($ResourceId)
                 RandomizationWindow = 0
-                Param               = (New-TKScriptContent -Script $Script -Parameters $Parameters)
+                Param               = (New-TKScriptContent -Script $Script -Parameters $Parameters -ParameterTypes $types)
             }
             $start = Invoke-TKRest -Method Post -Route wmi -Path 'SMS_ClientOperation.InitiateClientOperationEx' -Body $body
             if ($start -and $start.PSObject.Properties['OperationID']) { $operationId = [int]$start.OperationID }
@@ -334,6 +384,32 @@ function Get-TKScriptRunResult {
     return $rows[0]
 }
 
+function Get-TKScriptFullOutput {
+    <#
+    .SYNOPSIS
+        The complete output of one run. The status row (and the ScriptResult function) cut
+        ScriptOutput at 4000 characters - vSMS_ScriptsExecutionStatus does LEFT(..., 4000) for
+        every script whose Feature is 0, which is every script created through the API. The
+        table holds everything, and vSMS_ScriptsExecutionSummary exposes it as FullOutput,
+        one row per distinct output (TaskID, ScriptGuid, ScriptOutputHash).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$StatusRow)
+    # FullOutput is a lazy property: it is null in a filtered list and only filled on a GET by
+    # key. The key is (OutputAndExitCode, ScriptGuid, TaskID); for the output group (GroupType 1)
+    # OutputAndExitCode is the ScriptOutputHash of the status row.
+    $path = "SMS_ScriptsExecutionSummary(TaskID='{0}',ScriptGuid='{1}',OutputAndExitCode='{2}')" -f $StatusRow.TaskID, $StatusRow.ScriptGuid, $StatusRow.ScriptOutputHash
+    try {
+        $r = Invoke-TKRest -Method Get -Route wmi -Path $path
+    } catch {
+        Write-Warning "Full output not available ($($_.Exception.Message.Split([char]10)[0])); returning the first 4000 characters."
+        return [string]$StatusRow.ScriptOutput
+    }
+    $rows = @($r.value)
+    if ($rows.Count -gt 0 -and $rows[0].PSObject.Properties['FullOutput'] -and $null -ne $rows[0].FullOutput) { return [string]$rows[0].FullOutput }
+    return [string]$StatusRow.ScriptOutput
+}
+
 function Invoke-TKScript {
     <#
     .SYNOPSIS
@@ -358,17 +434,21 @@ function Invoke-TKScript {
         Start-Sleep -Seconds $PollSec
         $last = Get-TKScriptRunResult -ResourceId $ResourceId -OperationId $operationId
         if ($last) {
+            # The row appears when the client has reported; observed ScriptExecutionState
+            # values: 1 = succeeded, 2 = failed (exit code -2147467259 when the script threw).
             $state = $null
-            if ($last.PSObject.Properties['ScriptExecutionState']) { $state = $last.ScriptExecutionState }
-            # A row appears when the client reports; output and exit code arrive with it.
-            $hasOutput = $last.PSObject.Properties['ScriptOutput'] -and -not [string]::IsNullOrEmpty([string]$last.ScriptOutput)
-            $hasExit   = $last.PSObject.Properties['ScriptExitCode'] -and $null -ne $last.ScriptExitCode
-            if ($hasOutput -or $hasExit) {
+            if ($last.PSObject.Properties['ScriptExecutionState']) { $state = [int]$last.ScriptExecutionState }
+            if ($state -eq 1 -or $state -eq 2) {
+                $raw = [string]$last.ScriptOutput
+                if ($raw.Length -ge 4000) { $raw = Get-TKScriptFullOutput -StatusRow $last }
+                $stateText = 'Failed'
+                if ($state -eq 1) { $stateText = 'Succeeded' }
                 return [pscustomobject]@{
                     OperationId = $operationId
-                    State       = $state
+                    State       = $stateText
                     ExitCode    = $last.ScriptExitCode
-                    Output      = (ConvertFrom-TKScriptOutput -ScriptOutput ([string]$last.ScriptOutput))
+                    Output      = (ConvertFrom-TKScriptOutput -ScriptOutput $raw)
+                    OutputChars = $raw.Length
                     Raw         = $last
                 }
             }

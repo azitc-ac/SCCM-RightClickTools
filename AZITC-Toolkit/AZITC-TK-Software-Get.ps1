@@ -79,7 +79,9 @@ function Get-ArpEntries {
             Z = $sizeKb                                     # EstimatedSize in KB
         })
     }
-    return ,$list
+    # A plain array, unrolled by the pipeline and collected by the caller's @(). Returning
+    # the List itself (",$list") made AddRange append the whole list as one element under 5.1.
+    return $list.ToArray()
 }
 
 function Resolve-SidName {
@@ -93,8 +95,8 @@ function Resolve-SidName {
 # --- ARP enumeration --------------------------------------------------------
 
 $entries = New-Object System.Collections.Generic.List[object]
-$entries.AddRange(@(Get-ArpEntries -RootPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -Scope 'Machine' -Arch 'x64'))
-$entries.AddRange(@(Get-ArpEntries -RootPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' -Scope 'Machine' -Arch 'x86'))
+$entries.AddRange([object[]]@(Get-ArpEntries -RootPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -Scope 'Machine' -Arch 'x64'))
+$entries.AddRange([object[]]@(Get-ArpEntries -RootPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' -Scope 'Machine' -Arch 'x86'))
 
 $userHives = @{}
 foreach ($hive in (Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
@@ -102,7 +104,7 @@ foreach ($hive in (Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction Silen
     if ($sid -notmatch '^S-1-5-21-') { continue }
     if ($sid -like '*_Classes') { continue }
     $userHives[$sid] = Resolve-SidName -Sid $sid
-    $entries.AddRange(@(Get-ArpEntries -RootPath "Registry::HKEY_USERS\$sid\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -Scope "User:$sid" -Arch 'n/a'))
+    $entries.AddRange([object[]]@(Get-ArpEntries -RootPath "Registry::HKEY_USERS\$sid\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" -Scope "User:$sid" -Arch 'n/a'))
 }
 
 $sorted = $entries | Sort-Object -Property N, V
@@ -141,9 +143,11 @@ try {
 
 function New-Envelope {
     param([object[]]$Items, [bool]$Truncated)
+    # Windows PowerShell 5.1 refuses a generic List inside [pscustomobject]@{...}
+    # ("Argument types do not match"), so both lists become plain arrays first.
     $payload = [pscustomobject]@{
-        Items = @($Items)
-        Apps  = @($apps)
+        Items = [object[]]$Items
+        Apps  = [object[]]$apps.ToArray()
         Users = $userHives
     }
     $json = $payload | ConvertTo-Json -Depth 5 -Compress

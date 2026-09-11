@@ -210,7 +210,11 @@ function Invoke-WithTimeout {
 function Get-LogTail {
     param([string]$Path, [int]$Lines = 40)
     try {
-        if (Test-Path -LiteralPath $Path) { return @(Get-Content -LiteralPath $Path -Tail $Lines -ErrorAction Stop) }
+        if (Test-Path -LiteralPath $Path) {
+            # Plain strings: Get-Content decorates each line with PSPath/PSDrive note properties,
+            # and ConvertTo-Json would serialise those too - 600 characters per line instead of 60.
+            return @(Get-Content -LiteralPath $Path -Tail $Lines -ErrorAction Stop | ForEach-Object { [string]$_ })
+        }
     } catch { }
     return @()
 }
