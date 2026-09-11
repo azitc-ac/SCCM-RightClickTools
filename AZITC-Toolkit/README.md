@@ -18,6 +18,8 @@ troubleshooting), not a warning.
 | `AZITC-TK-Software-Action.ps1` | on the client, as a Run Script | Parameters `Action` (Inspect/Uninstall/Repair), `Key`, `ExtraArgs`, `TimeoutMin`, `KillRunning`, `ReEvaluate`. Strategy cascade MSI -> QuietUninstallString -> Inno/NSIS -> ExtraArgs -> Unknown, timeout with process-tree kill, exit-code mapping, post-verification, optional trigger of schedule `…121`. Per-user entries are reported, never executed. Console timeout 1800 s. |
 | `AZITC-TK-Log-Get.ps1` | on the client, as a Run Script | Parameters `LogName` (name, path or wildcard), `Lines` (1..500), `Pattern` (regex). Tail of a client log from the served folders only (the client's log folder, the toolkit's, PSADT's), ConfigMgr entries reduced to `date time  component  message`. Console timeout 120 s. |
 | `AZITC-TK-Client-Action.ps1` | on the client, as a Run Script | Parameter `Action`: MachinePolicy, AppDeploymentEval, HardwareInventory, SoftwareInventory, DiscoveryData, SoftwareUpdateScan, SoftwareUpdateEval, All. Triggers the schedule(s) through `SMS_Client.TriggerSchedule`. Console timeout 120 s. |
+| `AZITC-TK.ps1` | on the admin workstation, started by the console action | The window: Software (ARP) with search, sort, Inspect / Uninstall / Repair / Uninstall + re-evaluate and the `CCM_Application` list; Logs; Client (notifications and the client-action script). One background runspace, the UI never blocks. `-SelfTest` and `-AutoCloseSeconds` for scripted checks. |
+| `AZITC-TK.xml`, `AZITC-TK-Launcher.cs`, `Install-AZITCTKConsoleExtension.ps1` | console | The right-click action for devices (Devices node and collection member view), the hidden-window STA launcher, and the installer (`-Uninstall` to remove). |
 | `AZITC-TK-AdminService.ps1` | on the admin workstation, dot-sourced | The transport: `Connect-TKAdminService`, `Get-TKDevice`, `Get-TKScript`, `Start-TKScript` / `Invoke-TKScript`, `ConvertFrom-TKEnvelope`, `Get-TKSoftware`, `Invoke-TKSoftwareAction`, `Get-TKLog`, plus `Register-TKScript` / `Approve-TKScript` for putting a script into the Scripts node with its parameter definition. Usage block at the end of the file. |
 
 Everything is Windows PowerShell 5.1; files are UTF-8 with BOM, CRLF.
@@ -53,6 +55,17 @@ Approval: `ApprovalState` 3 = approved, 0 = waiting, 1 = denied. Running an unap
 gives 403 (RunScript) or 500 (InitiateClientOperationEx, "Script is not approved." in
 `SMSProv.log`).
 
+## Installing the console action
+
+```powershell
+.Install-AZITCTKConsoleExtension.ps1          # as administrator, on the machine with the console
+```
+
+Copies the window and the library to `<AdminConsole>xtensionsAZITC-Toolkit`, compiles the
+launcher, writes `AZITC-TK.xml` for the Devices node and the collection member view. Restart
+the console. The hierarchy setting *Only allow console extensions that are approved for the
+hierarchy* has to be off, as for every file-based extension.
+
 ## Importing the scripts
 
 `New-CMScript` creates the script but does **not** detect its parameters - `ParamsDefinition`
@@ -66,6 +79,6 @@ refused; the bound action `SMS_Scripts(<guid>)/AdminService.UpdateScript` can.
 
 ## Status
 
-See `CHANGELOG.md`. Steps 1 and 2 are done - the three scripts are in the site, approved, and
-have run end to end against the lab device (Get, Inspect, Uninstall+ReEvaluate, log tail).
-Step 3 (GUI) is not started; of Step 4 the log tail exists.
+See `CHANGELOG.md`. Steps 1-3 are done: four scripts in the site, approved and run end to end
+on the lab device; the window and the console action are installed on the lab console. Of
+Step 4 the log tail and the client actions exist.

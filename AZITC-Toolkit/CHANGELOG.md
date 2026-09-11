@@ -1,5 +1,68 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-11 (night) - Step 3: the window and the console extension
+
+### `AZITC-TK.ps1` - the window
+
+One file, Windows PowerShell 5.1, WPF from a XAML here-string. Parameters `-DeviceName`,
+`-ResourceId`, `-SmsProvider`, `-SiteCode`, `-SkipCertificateCheck`; `-SelfTest` runs the
+connect and the software list without a window and prints a summary, `-AutoCloseSeconds n`
+closes the window after n idle seconds and prints its state - both exist so the thing can be
+checked from a script.
+
+* Tabs: **Software (ARP)** - search box (DataView `RowFilter` over name, publisher, version and
+  the match column), column-click sort, Refresh / Inspect / Uninstall / Uninstall + re-evaluate /
+  Repair, "kill running processes first", extra args; a lower pane with the action result
+  (strategy, exit code, meaning, log tail) and a second grid with the `CCM_Application` rows of
+  the device. Uninstall/Repair are disabled for `User:*` entries with a tooltip saying why;
+  Repair carries a tooltip when the entry has NoRepair/NoModify. Destructive actions ask once.
+  **Logs** - log name (editable list of the usual client logs plus the PSADT folder), lines,
+  regex, output in a monospace box. **Client** - one button per client notification
+  (`Send-TKClientNotification`) and one per action of the client-action script.
+* Status bar: text, OperationId of the last run, elapsed seconds, an indeterminate progress bar
+  while a job runs. All buttons that start something are disabled while one runs.
+* The grids bind a `System.Data.DataTable`, not PSCustomObjects - the DataView gives filter and
+  sort for free and binds without surprises in 5.1.
+* Background: one runspace, opened once, the library dot-sourced into its **global** scope by
+  the connect job (`AddScript(text, $false)`; a dot-source in local scope would vanish with the
+  job, and re-sourcing resets the connection). Every job is a `[PowerShell]` with `BeginInvoke`;
+  a `DispatcherTimer` (500 ms) collects the result on the UI thread and hands it to the job's
+  callback. Callback errors land in the status bar instead of dying in the dispatcher.
+* Heuristic CM application match: ARP name starts with the application name or the other way
+  round, longest application name wins; on CLIENT01 9 of 28 entries match. Labelled as heuristic in
+  the column header.
+* Script GUIDs come from name lookups in the connect job; the window shows which of the four
+  scripts is missing or unapproved.
+
+Smoke test on CLIENT01 through the launcher: window opens, list loads in 11 s (28 entries, 20
+applications), auto-close reports no handler error.
+
+### Console extension
+
+* `AZITC-TK.xml` - `ActionDescription Class="Executable"` with `<FilePath>` and `<Parameters>`
+  (the element names the console accepts; anything unknown makes it drop the action), icon
+  `device_actions` from `AdminUI.UIResources.dll` (resource names listed from the assembly).
+  Tokens `##SUB:Name##`, `##SUB:ResourceID##`, `##SUB:__Server##`, `##SUB:SiteCode##`.
+* Node GUIDs verified in this console's `XmlStorage\ConsoleRoot`:
+  `{ed9dee86-eadd-4ac8-82a1-7234a4646e62}` is the QueryDescription of the Devices node
+  (`SMS_CombinedDeviceResources`, AssetManagementNode.xml), `{3fd01cd1-9e01-461e-92cd-94866b8d1f39}`
+  the one of a collection's member view (`##SUB:MemberClassName##`, ConnectedConsole.xml).
+* `AZITC-TK-Launcher.cs` - starts `powershell.exe -NoProfile -NonInteractive -STA
+  -ExecutionPolicy Bypass -File` without a console window and re-quotes every argument, so a
+  name with a space survives. Compiled by the installer with the .NET Framework `csc.exe`.
+* `Install-AZITCTKConsoleExtension.ps1` - finds the console (SMS_ADMIN_UI_PATH first), copies
+  the two scripts to `extensions\AZITC-Toolkit\`, compiles the launcher, writes the XML into
+  both action folders; `-Uninstall` removes it all; `-SkipCertificateCheck:$false` for a PKI
+  provider. Installed on LAB01's console; the hierarchy setting that hides file-based extensions
+  (`ConsoleExtensionsRegisteredWithTheSite`) reads 0 there, so the entry should appear after a
+  console restart. Not yet clicked in a live console.
+
+### Open
+
+* The right-click in a live console (the user's console had crashed earlier).
+* Column widths, keyboard shortcuts, remembering the window size - polish, not function.
+* `-Transport` is not exposed in the window; nothing needs it yet.
+
 ## 2026-09-11 (evening) - Step 2 done: Get, Inspect, Uninstall+ReEvaluate on CLIENT01; Log-Get added
 
 Everything below was run against CLIENT01 (16777200) through the AdminService, nothing else touched

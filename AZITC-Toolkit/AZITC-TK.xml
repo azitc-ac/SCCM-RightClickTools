@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ConfigMgr console extension: AZITC Toolkit (per-device window)
+
+  Installed by Install-AZITCTKConsoleExtension.ps1 into
+    <AdminConsole>\XmlStorage\Extensions\Actions\{ed9dee86-eadd-4ac8-82a1-7234a4646e62}\   devices in the Devices node
+    <AdminConsole>\XmlStorage\Extensions\Actions\{3fd01cd1-9e01-461e-92cd-94866b8d1f39}\   devices in a collection's member view
+  Both GUIDs were read from this console's XmlStorage\ConsoleRoot (AssetManagementNode.xml,
+  ConnectedConsole.xml): they are the QueryDescription nodes over SMS_CombinedDeviceResources
+  and ##SUB:MemberClassName## whose rows are the devices.
+
+  Placeholders ##EXT_PATH##, ##SCRIPT_PATH## and ##SKIPCERT## are filled in by the installer.
+  Runtime tokens the console replaces: ##SUB:Name##, ##SUB:ResourceID##, ##SUB:__Server##, ##SUB:SiteCode##.
+  Unknown elements make the console drop the action silently, so the file stays minimal.
+-->
+<ActionDescription
+    Class="Executable"
+    DisplayName="AZITC Toolkit"
+    MnemonicDisplayName="AZITC Toolkit"
+    Description="Software, logs and client actions of this device through Run Scripts and the AdminService">
+  <ShowOn>
+    <string>ContextMenu</string>
+  </ShowOn>
+  <ImagesDescription>
+    <ResourceAssembly>
+      <Assembly>AdminUI.UIResources.dll</Assembly>
+      <Type>Microsoft.ConfigurationManagement.AdminConsole.UIResources.Properties.Resources.resources</Type>
+    </ResourceAssembly>
+    <ImageResourceName>device_actions</ImageResourceName>
+  </ImagesDescription>
+  <Executable>
+    <FilePath>##EXT_PATH##\AZITC-TK-Launcher.exe</FilePath>
+    <Parameters>"##SCRIPT_PATH##" -DeviceName "##SUB:Name##" -ResourceId "##SUB:ResourceID##" -SmsProvider "##SUB:__Server##" -SiteCode "##SUB:SiteCode##"##SKIPCERT##</Parameters>
+  </Executable>
+</ActionDescription>
