@@ -589,6 +589,52 @@ function Approve-TKScript {
     return (@((Invoke-TKRest -Method Get -Route wmi -Path "SMS_Scripts('$ScriptGuid')").value)[0])
 }
 
+# --- Client notification ----------------------------------------------------
+
+# The Type codes of SMS_ClientOperation.InitiateClientOperation, read from the console's
+# enum Microsoft.ConfigurationManagement.ManagementProvider.ClientActionType. 135
+# (RequestScriptExecution) is the one this library verified first, 13 was verified on
+# the lab device: BgbAgent received the task 8 s after the call, AppDiscovery evaluated
+# every deployment 15 s after it.
+$script:TKClientActionTypes = @{
+    MachinePolicy      = 8     # ClientNotificationRequestMachinePolicyNow
+    UserPolicy         = 9     # ClientNotificationRequestUsersPolicyNow
+    DiscoveryData      = 10    # ClientNotificationRequestDDRNow
+    SoftwareInventory  = 11    # ClientNotificationRequestSWInvNow
+    HardwareInventory  = 12    # ClientNotificationRequestHWInvNow
+    AppDeploymentEval  = 13    # ClientNotificationAppDeplEvalNow
+    SoftwareUpdateEval = 14    # ClientNotificationSUMDeplEvalNow
+    SwitchSUP          = 15    # ClientRequestSUPChangeNow
+    Restart            = 17    # ClientNotificationRebootMachine
+    CheckCompliance    = 125   # ClientNotificationCheckComplianceNow
+    WakeUp             = 150   # ClientNotificationWakeUpClientNow
+}
+
+function Send-TKClientNotification {
+    <#
+    .SYNOPSIS
+        The console's "Client Notification" for one device: a push over the notification
+        channel, no script, no approval, seconds instead of a Run Script round trip. Returns
+        the operation id; there is no result beyond the operation state.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$ResourceId,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('MachinePolicy', 'UserPolicy', 'DiscoveryData', 'SoftwareInventory', 'HardwareInventory', 'AppDeploymentEval', 'SoftwareUpdateEval', 'SwitchSUP', 'Restart', 'CheckCompliance', 'WakeUp')]
+        [string]$Action
+    )
+    $type = [int]$script:TKClientActionTypes[$Action]
+    $r = Invoke-TKRest -Method Post -Route wmi -Path 'SMS_ClientOperation.InitiateClientOperation' -Body @{
+        Type                = $type
+        TargetCollectionID  = ''
+        TargetResourceIDs   = @($ResourceId)
+        RandomizationWindow = 0
+    }
+    if ($r -and $r.PSObject.Properties['ReturnValue'] -and [int]$r.ReturnValue -ne 0) { throw "InitiateClientOperation ($Action, type $type) returned $($r.ReturnValue)." }
+    return [pscustomobject]@{ Action = $Action; Type = $type; OperationId = [int]$r.OperationID }
+}
+
 # --- Convenience ------------------------------------------------------------
 
 function Get-TKLog {
