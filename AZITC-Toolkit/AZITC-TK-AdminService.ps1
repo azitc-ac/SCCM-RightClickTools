@@ -785,6 +785,66 @@ function Invoke-TKCMAppAction {
     return $parsed
 }
 
+function Get-TKClient {
+    <#
+    .SYNOPSIS
+        Runs AZITC-TK-Client-Get on a device: client facts, pending reboot, services, processes,
+        cache - one envelope.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeviceName,
+        [string]$ScriptName = 'AZITC-TK-Client-Get',
+        [int]$TimeoutSec = 300
+    )
+    $dev = Get-TKDevice -Name $DeviceName
+    $scr = Get-TKScript -Name $ScriptName
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -TimeoutSec $TimeoutSec
+    if ($res.ExitCode -ne 0) { throw "Script exit $($res.ExitCode), state $($res.State). Output: $($res.Output)" }
+    $envelope = ConvertFrom-TKEnvelope -Json $res.Output
+    if ($envelope.Truncated) { Write-Warning "Lists shortened to fit the output limit: $($envelope.Payload.PSObject.Properties.Name -join ', ')" }
+    if ($envelope.Error) { Write-Warning "Client-Get on $($envelope.Host): $($envelope.Error)" }
+    return [pscustomobject]@{
+        Host        = $envelope.Host
+        TimeUtc     = $envelope.TimeUtc
+        Client      = $envelope.Payload.Client
+        Reboot      = $envelope.Payload.Reboot
+        Services    = @($envelope.Payload.Services)
+        Processes   = @($envelope.Payload.Processes)
+        Cache       = @($envelope.Payload.Cache)
+        Error       = $envelope.Error
+        OperationId = $res.OperationId
+        OutputChars = $res.Output.Length
+    }
+}
+
+function Invoke-TKClientManage {
+    <#
+    .SYNOPSIS
+        Runs AZITC-TK-Client-Manage on a device: Service Start/Stop/Restart, Process Kill,
+        Cache Delete/Clear.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeviceName,
+        [Parameter(Mandatory = $true)][ValidateSet('Service', 'Process', 'Cache')][string]$Target,
+        [Parameter(Mandatory = $true)][ValidateSet('Start', 'Stop', 'Restart', 'Kill', 'Delete', 'Clear')][string]$Action,
+        [string]$Name = '',
+        [string]$ScriptName = 'AZITC-TK-Client-Manage',
+        [int]$TimeoutSec = 300
+    )
+    $dev = Get-TKDevice -Name $DeviceName
+    $scr = Get-TKScript -Name $ScriptName
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters @{ Target = $Target; Action = $Action; Name = $Name } -TimeoutSec $TimeoutSec
+    $parsed = $null
+    try { $parsed = $res.Output | ConvertFrom-Json } catch { }
+    if ($null -eq $parsed) { return [pscustomobject]@{ State = $res.State; ExitCode = $res.ExitCode; RawOutput = $res.Output; OperationId = $res.OperationId } }
+    $parsed | Add-Member -NotePropertyName ScriptState -NotePropertyValue $res.State -Force
+    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $res.ExitCode -Force
+    $parsed | Add-Member -NotePropertyName OperationId -NotePropertyValue $res.OperationId -Force
+    return $parsed
+}
+
 <#
 === Usage (end-to-end test without GUI) ===================================
 
