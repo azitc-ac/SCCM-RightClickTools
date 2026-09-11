@@ -1,5 +1,42 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-11 (late) - Step 4: CM application actions, client overview, services / processes / cache
+
+Three more Run Scripts, all registered through `Register-TKScript`, approved, run on CLIENT01, and
+wired into the window.
+
+* **`AZITC-TK-CMApp-Action.ps1`** - `Action` (Install/Uninstall/Repair), `AppId`, `Revision`,
+  `TimeoutMin`, `IsRebootIfNeeded`. Calls the `CCM_Application` method in `root\ccm\ClientSDK`
+  and watches `InstallState` / `EvaluationState` until the wanted state is reached, enforcement
+  fails (4, 13) or the timeout runs out; the course is in the result. The ClientSDK provider
+  refuses WQL filters on the class ("Provider is not capable of the attempted operation"), so
+  instances are enumerated and matched in PowerShell. Refuses an action that is not in the
+  application's `AllowedActions`. CLIENT01, Google Chrome: uninstall 33 s (`Installed -> Waiting for
+  content -> Enforcing -> NotInstalled`), install 39 s, both watched to the end. In the window:
+  Install / Uninstall / Repair buttons above the ConfigMgr applications grid, enabled from
+  `AllowedActions`.
+* **`AZITC-TK-Client-Get.ps1`** - no parameters, one envelope (Kind `Client`): client facts
+  (OS, boot, memory, client version, site, MP, cache config), pending reboot with its sources
+  (CBS, Windows Update, pending file renames, computer rename, `CCM_ClientUtilities.
+  DetermineIfRebootPending`), every service, every process with owner and command line, every
+  cache item. Lists are cut from the biggest section down when the envelope would exceed the
+  limit. CLIENT01: 37 s, 258 services, 118 processes, 7 cache items, 15 KB. In the window: the Client
+  tab has Overview / Services / Processes / Cache / Actions, filled by one "Read client".
+* **`AZITC-TK-Client-Manage.ps1`** - `Target` (Service/Process/Cache), `Action`
+  (Start/Stop/Restart/Kill/Delete/Clear), `Name`. The ConfigMgr client service and the core
+  system processes are protected on the client side; Clear removes only items that are not
+  persisted and have no reference. CLIENT01: Spooler restart 11 s, cache clear 16 s (5.3 GB freed,
+  the item in use skipped). In the window: Start/Stop/Restart on the selected service, End
+  process, Delete selected / Clear unused on the cache, each with a confirmation, each followed
+  by a fresh read.
+
+`Invoke-TKCMAppAction`, `Get-TKClient`, `Invoke-TKClientManage` in the library. The window's
+smoke test now also reads the client tab: `autoclose: ... services=258 processes=115
+handlerError=''`. Seven scripts in the site.
+
+Not done: the 80 KB test on a device with several hundred ARP entries; column widths and
+other polish; nothing of Step 4 is left except what the handover did not list.
+
 ## 2026-09-11 (night) - Step 3: the window and the console extension
 
 ### `AZITC-TK.ps1` - the window

@@ -132,7 +132,7 @@ $connectScript = {
     }
     # Script GUIDs by name, once; warn about approval here so the window can show it.
     $scripts = @{}
-    foreach ($n in 'AZITC-TK-Software-Get', 'AZITC-TK-Software-Action', 'AZITC-TK-Log-Get', 'AZITC-TK-Client-Action') {
+    foreach ($n in 'AZITC-TK-Software-Get', 'AZITC-TK-Software-Action', 'AZITC-TK-Log-Get', 'AZITC-TK-Client-Action', 'AZITC-TK-CMApp-Action', 'AZITC-TK-Client-Get', 'AZITC-TK-Client-Manage') {
         try { $s = Get-TKScript -Name $n -WarningAction SilentlyContinue; $scripts[$n] = "$($s.ScriptGuid) v$($s.ScriptVersion) approval=$($s.ApprovalState)" } catch { $scripts[$n] = "missing: $($_.Exception.Message)" }
     }
     [pscustomobject]@{
@@ -163,6 +163,21 @@ $logScript = {
 $notifyScript = {
     param($ResourceId, $Action)
     Send-TKClientNotification -ResourceId $ResourceId -Action $Action
+}
+
+$cmAppScript = {
+    param($DeviceName, $Action, $AppId, $Revision)
+    Invoke-TKCMAppAction -DeviceName $DeviceName -Action $Action -AppId $AppId -Revision $Revision -TimeoutMin 10
+}
+
+$clientGetScript = {
+    param($DeviceName)
+    Get-TKClient -DeviceName $DeviceName
+}
+
+$clientManageScript = {
+    param($DeviceName, $Target, $Action, $Name)
+    Invoke-TKClientManage -DeviceName $DeviceName -Target $Target -Action $Action -Name $Name
 }
 
 $clientActionScript = {
@@ -282,19 +297,27 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
               <TextBox x:Name="ActionResult" Style="{StaticResource Mono}" Text=""/>
             </TabItem>
             <TabItem Header="ConfigMgr applications on this device">
-              <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
-                        HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
-                <DataGrid.Columns>
-                  <DataGridTextColumn Header="Application" Binding="{Binding Name}" Width="3*"/>
-                  <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="140"/>
-                  <DataGridTextColumn Header="Install state" Binding="{Binding InstallState}" Width="100"/>
-                  <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedState}" Width="90"/>
-                  <DataGridTextColumn Header="Eval" Binding="{Binding EvaluationState}" Width="45"/>
-                  <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
-                  <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="140"/>
-                  <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="2*"/>
-                </DataGrid.Columns>
-              </DataGrid>
+              <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="0,4,0,4">
+                  <Button x:Name="BtnAppInstall" Content="Install" IsEnabled="False"/>
+                  <Button x:Name="BtnAppUninstall" Content="Uninstall" IsEnabled="False"/>
+                  <Button x:Name="BtnAppRepair" Content="Repair" IsEnabled="False"/>
+                  <TextBlock Text="through CCM_Application on the client, watched until the state changes (AllowedActions decide what is offered)" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                </DockPanel>
+                <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
+                  <DataGrid.Columns>
+                    <DataGridTextColumn Header="Application" Binding="{Binding Name}" Width="3*"/>
+                    <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="140"/>
+                    <DataGridTextColumn Header="Install state" Binding="{Binding InstallState}" Width="100"/>
+                    <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedState}" Width="90"/>
+                    <DataGridTextColumn Header="Eval" Binding="{Binding EvaluationState}" Width="45"/>
+                    <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
+                    <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="140"/>
+                    <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="2*"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
             </TabItem>
           </TabControl>
         </Grid>
@@ -321,35 +344,114 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
       </TabItem>
       <!-- ================= Client ================= -->
       <TabItem Header="Client">
-        <Grid Margin="6">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-          </Grid.RowDefinitions>
-          <GroupBox Grid.Row="0" Header="Client notification (push over the notification channel, seconds, no result beyond the operation)" Padding="6" Margin="0,0,0,8">
-            <WrapPanel>
-              <Button x:Name="BtnNotifyPolicy" Content="Machine policy" Tag="MachinePolicy"/>
-              <Button x:Name="BtnNotifyAppEval" Content="App deployment evaluation" Tag="AppDeploymentEval"/>
-              <Button x:Name="BtnNotifySumEval" Content="Update deployment evaluation" Tag="SoftwareUpdateEval"/>
-              <Button x:Name="BtnNotifyHwInv" Content="Hardware inventory" Tag="HardwareInventory"/>
-              <Button x:Name="BtnNotifySwInv" Content="Software inventory" Tag="SoftwareInventory"/>
-              <Button x:Name="BtnNotifyDdr" Content="Discovery data" Tag="DiscoveryData"/>
-              <Button x:Name="BtnNotifyCompliance" Content="Check compliance" Tag="CheckCompliance"/>
-            </WrapPanel>
-          </GroupBox>
-          <GroupBox Grid.Row="1" Header="Client-action script (Run Script, ~1 min, reports which schedules fired)" Padding="6" Margin="0,0,0,8">
-            <WrapPanel>
-              <Button x:Name="BtnScriptPolicy" Content="Machine policy" Tag="MachinePolicy"/>
-              <Button x:Name="BtnScriptAppEval" Content="App deployment evaluation" Tag="AppDeploymentEval"/>
-              <Button x:Name="BtnScriptAll" Content="Policy, then app evaluation" Tag="All"/>
-              <Button x:Name="BtnScriptHwInv" Content="Hardware inventory" Tag="HardwareInventory"/>
-              <Button x:Name="BtnScriptSwInv" Content="Software inventory" Tag="SoftwareInventory"/>
-              <Button x:Name="BtnScriptUpdScan" Content="Update scan" Tag="SoftwareUpdateScan"/>
-            </WrapPanel>
-          </GroupBox>
-          <TextBox Grid.Row="2" x:Name="ClientText" Style="{StaticResource Mono}" Text=""/>
-        </Grid>
+        <DockPanel Margin="6">
+          <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+            <Button x:Name="BtnClientRefresh" Content="Read client"/>
+            <TextBlock x:Name="ClientInfo" VerticalAlignment="Center" Foreground="#555555" Text="Services, processes, cache, pending reboot - one Run Script, about half a minute."/>
+          </DockPanel>
+          <TabControl x:Name="ClientTabs">
+            <TabItem Header="Overview">
+              <TextBox x:Name="ClientOverview" Style="{StaticResource Mono}" Text=""/>
+            </TabItem>
+            <TabItem Header="Services">
+              <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="0,4,0,4">
+                  <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <TextBox x:Name="SvcSearch" Width="200" VerticalContentAlignment="Center" Margin="0,0,12,0"/>
+                  <Button x:Name="BtnSvcStart" Content="Start" IsEnabled="False"/>
+                  <Button x:Name="BtnSvcStop" Content="Stop" IsEnabled="False"/>
+                  <Button x:Name="BtnSvcRestart" Content="Restart" IsEnabled="False"/>
+                </DockPanel>
+                <DataGrid x:Name="GridServices" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
+                  <DataGrid.Columns>
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="180"/>
+                    <DataGridTextColumn Header="Display name" Binding="{Binding DisplayName}" Width="3*"/>
+                    <DataGridTextColumn Header="State" Binding="{Binding State}" Width="80"/>
+                    <DataGridTextColumn Header="Start" Binding="{Binding StartMode}" Width="70"/>
+                    <DataGridTextColumn Header="Account" Binding="{Binding Account}" Width="2*"/>
+                    <DataGridTextColumn Header="PID" Binding="{Binding ProcessId}" Width="60"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
+            </TabItem>
+            <TabItem Header="Processes">
+              <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="0,4,0,4">
+                  <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                  <TextBox x:Name="ProcSearch" Width="200" VerticalContentAlignment="Center" Margin="0,0,12,0"/>
+                  <Button x:Name="BtnProcKill" Content="End process" IsEnabled="False"/>
+                  <TextBlock Text="sorted by working set; the ConfigMgr client and core system processes are protected on the client side" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                </DockPanel>
+                <DataGrid x:Name="GridProcesses" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
+                  <DataGrid.Columns>
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="180"/>
+                    <DataGridTextColumn Header="PID" Binding="{Binding Id}" Width="60"/>
+                    <DataGridTextColumn Header="Session" Binding="{Binding Session}" Width="55"/>
+                    <DataGridTextColumn Header="User" Binding="{Binding User}" Width="160"/>
+                    <DataGridTextColumn Header="WS MB" Binding="{Binding WorkingSetMB}" Width="70"/>
+                    <DataGridTextColumn Header="CPU s" Binding="{Binding CpuSeconds}" Width="70"/>
+                    <DataGridTextColumn Header="Started (UTC)" Binding="{Binding Started}" Width="130"/>
+                    <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="3*"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
+            </TabItem>
+            <TabItem Header="Cache">
+              <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="0,4,0,4">
+                  <Button x:Name="BtnCacheDelete" Content="Delete selected" IsEnabled="False"/>
+                  <Button x:Name="BtnCacheClear" Content="Clear unused" IsEnabled="False"/>
+                  <TextBlock x:Name="CacheInfo" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0" Text=""/>
+                </DockPanel>
+                <DataGrid x:Name="GridCache" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
+                          HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
+                  <DataGrid.Columns>
+                    <DataGridTextColumn Header="Content" Binding="{Binding ContentId}" Width="3*"/>
+                    <DataGridTextColumn Header="Ver" Binding="{Binding Version}" Width="45"/>
+                    <DataGridTextColumn Header="MB" Binding="{Binding SizeMB}" Width="80"/>
+                    <DataGridTextColumn Header="Refs" Binding="{Binding References}" Width="50"/>
+                    <DataGridTextColumn Header="Persist" Binding="{Binding Persist}" Width="60"/>
+                    <DataGridTextColumn Header="Last referenced (UTC)" Binding="{Binding LastReferenced}" Width="140"/>
+                    <DataGridTextColumn Header="Folder" Binding="{Binding Folder}" Width="2*"/>
+                  </DataGrid.Columns>
+                </DataGrid>
+              </DockPanel>
+            </TabItem>
+            <TabItem Header="Actions">
+              <Grid>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <GroupBox Grid.Row="0" Header="Client notification (push over the notification channel, seconds, no result beyond the operation)" Padding="6" Margin="0,4,0,8">
+                  <WrapPanel>
+                    <Button x:Name="BtnNotifyPolicy" Content="Machine policy" Tag="MachinePolicy"/>
+                    <Button x:Name="BtnNotifyAppEval" Content="App deployment evaluation" Tag="AppDeploymentEval"/>
+                    <Button x:Name="BtnNotifySumEval" Content="Update deployment evaluation" Tag="SoftwareUpdateEval"/>
+                    <Button x:Name="BtnNotifyHwInv" Content="Hardware inventory" Tag="HardwareInventory"/>
+                    <Button x:Name="BtnNotifySwInv" Content="Software inventory" Tag="SoftwareInventory"/>
+                    <Button x:Name="BtnNotifyDdr" Content="Discovery data" Tag="DiscoveryData"/>
+                    <Button x:Name="BtnNotifyCompliance" Content="Check compliance" Tag="CheckCompliance"/>
+                  </WrapPanel>
+                </GroupBox>
+                <GroupBox Grid.Row="1" Header="Client-action script (Run Script, ~1 min, reports which schedules fired)" Padding="6" Margin="0,0,0,8">
+                  <WrapPanel>
+                    <Button x:Name="BtnScriptPolicy" Content="Machine policy" Tag="MachinePolicy"/>
+                    <Button x:Name="BtnScriptAppEval" Content="App deployment evaluation" Tag="AppDeploymentEval"/>
+                    <Button x:Name="BtnScriptAll" Content="Policy, then app evaluation" Tag="All"/>
+                    <Button x:Name="BtnScriptHwInv" Content="Hardware inventory" Tag="HardwareInventory"/>
+                    <Button x:Name="BtnScriptSwInv" Content="Software inventory" Tag="SoftwareInventory"/>
+                    <Button x:Name="BtnScriptUpdScan" Content="Update scan" Tag="SoftwareUpdateScan"/>
+                  </WrapPanel>
+                </GroupBox>
+                <TextBox Grid.Row="2" x:Name="ClientText" Style="{StaticResource Mono}" Text=""/>
+              </Grid>
+            </TabItem>
+          </TabControl>
+        </DockPanel>
       </TabItem>
     </TabControl>
   </DockPanel>
@@ -379,7 +481,12 @@ $script:Device = $null
 $script:SoftwareTable = $null
 $script:AppsTable = $null
 $script:Busy = $true
+$script:ServicesTable = $null
+$script:ProcessesTable = $null
+$script:CacheTable = $null
 $script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnLog,
+    $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair,
+    $ui.BtnClientRefresh, $ui.BtnSvcStart, $ui.BtnSvcStop, $ui.BtnSvcRestart, $ui.BtnProcKill, $ui.BtnCacheDelete, $ui.BtnCacheClear,
     $ui.BtnNotifyPolicy, $ui.BtnNotifyAppEval, $ui.BtnNotifySumEval, $ui.BtnNotifyHwInv, $ui.BtnNotifySwInv, $ui.BtnNotifyDdr, $ui.BtnNotifyCompliance,
     $ui.BtnScriptPolicy, $ui.BtnScriptAppEval, $ui.BtnScriptAll, $ui.BtnScriptHwInv, $ui.BtnScriptSwInv, $ui.BtnScriptUpdScan)
 
@@ -415,6 +522,25 @@ function Update-SelectionButtons {
         $b.ToolTip = $tip
     }
     if ($has -and $machine -and -not [bool]$row.Row['RepairPossible']) { $ui.BtnRepair.ToolTip = 'The entry has NoRepair or NoModify set; Repair works for MSI products only.' }
+
+    # CM applications: what the client says it allows.
+    $app = $ui.GridApps.SelectedItem
+    $allowed = ''
+    if ($app -and -not $script:Busy) { $allowed = [string]$app.Row['AllowedActions'] }
+    $ui.BtnAppInstall.IsEnabled   = ($allowed -match '\bInstall\b')
+    $ui.BtnAppUninstall.IsEnabled = ($allowed -match '\bUninstall\b')
+    $ui.BtnAppRepair.IsEnabled    = ($allowed -match '\bRepair\b')
+
+    # Client tab
+    $svc = $ui.GridServices.SelectedItem
+    $hasSvc = ($null -ne $svc) -and (-not $script:Busy)
+    $state = ''; if ($hasSvc) { $state = [string]$svc.Row['State'] }
+    $ui.BtnSvcStart.IsEnabled   = $hasSvc -and ($state -ne 'Running')
+    $ui.BtnSvcStop.IsEnabled    = $hasSvc -and ($state -eq 'Running')
+    $ui.BtnSvcRestart.IsEnabled = $hasSvc -and ($state -eq 'Running')
+    $ui.BtnProcKill.IsEnabled   = ($null -ne $ui.GridProcesses.SelectedItem) -and (-not $script:Busy)
+    $ui.BtnCacheDelete.IsEnabled = ($null -ne $ui.GridCache.SelectedItem) -and (-not $script:Busy)
+    $ui.BtnCacheClear.IsEnabled  = ($null -ne $script:CacheTable) -and (-not $script:Busy)
 }
 
 function Show-Error {
@@ -518,6 +644,7 @@ function Start-Refresh {
         $ui.StatusText.Text = "$($script:SoftwareTable.Rows.Count) entries, $($script:AppsTable.Rows.Count) ConfigMgr applications ($($r.Seconds) s)"
         $ui.StatusOperation.Text = "OperationId $($r.Value.OperationId)"
         $ui.HeaderInfo.Text = "ResourceId $($script:Device.ResourceId)  |  client $($script:Device.ClientVersion)  |  online: $($script:Device.Online)  |  read $(Get-Date -Format 'HH:mm:ss')"
+        if ($AutoCloseSeconds -gt 0 -and -not $script:SmokeClientDone) { $script:SmokeClientDone = $true; Start-ClientRefresh }
     }
 }
 
@@ -602,8 +729,143 @@ function Start-ClientScript {
 }
 
 # ---------------------------------------------------------------------------
+# ConfigMgr application actions (CCM_Application on the client)
+# ---------------------------------------------------------------------------
+
+function Start-CMAppAction {
+    param([string]$Action)
+    $row = $ui.GridApps.SelectedItem
+    if (-not $row) { return }
+    $name = [string]$row.Row['Name']; $ver = [string]$row.Row['Version']; $id = [string]$row.Row['Id']
+    $q = "$Action '$name $ver' on $($script:Device.Name) through the ConfigMgr client?`n`nThe client runs the deployment type; the window watches the state for up to 10 minutes."
+    if ([System.Windows.MessageBox]::Show($window, $q, 'AZITC Toolkit', 'YesNo', 'Question') -ne 'Yes') { return }
+    $ui.LowerTabs.SelectedIndex = 0
+    $ui.ActionResult.Text = "$Action '$name' via CCM_Application ..."
+    Set-Busy $true "$Action '$name' via CCM_Application on $($script:Device.Name)..."
+    Invoke-TKJob -Name "CMApp $Action" -Script $cmAppScript -Arguments @($script:Device.Name, $Action, $id, 0) -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok) { $ui.ActionResult.Text = $r.Error; Show-Error "$($r.Name) failed: $($r.Error)"; return }
+        $v = $r.Value
+        $text = Format-Result -Object $v -Skip @('Schema', 'Kind', 'Before', 'After', 'Course')
+        $text += "`nBefore: " + ($v.Before | ConvertTo-Json -Compress) + "`nCourse:`n"
+        foreach ($c in @($v.Course)) { $text += "    {0}  {1} / {2} {3}  {4}%`n" -f $c.TimeUtc, $c.InstallState, $c.EvaluationState, $c.EvaluationText, $c.PercentComplete }
+        $text += "After:  " + ($v.After | ConvertTo-Json -Compress)
+        $ui.ActionResult.Text = $text
+        $ui.StatusText.Text = "$($r.Name): reached=$($v.Reached) timedOut=$($v.TimedOut) $($r.Seconds) s"
+        $ui.StatusOperation.Text = "OperationId $($v.OperationId)"
+        Start-Refresh
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Client tab: overview, services, processes, cache
+# ---------------------------------------------------------------------------
+
+function ConvertTo-ClientTables {
+    param($Client)
+    $s = New-Object System.Data.DataTable 'Services'
+    foreach ($c in 'Name', 'DisplayName', 'State', 'StartMode', 'Account') { $null = $s.Columns.Add($c, [string]) }
+    $null = $s.Columns.Add('ProcessId', [int])
+    foreach ($x in $Client.Services) { $r = $s.NewRow(); $r['Name'] = [string]$x.N; $r['DisplayName'] = [string]$x.D; $r['State'] = [string]$x.S; $r['StartMode'] = [string]$x.M; $r['Account'] = [string]$x.A; $r['ProcessId'] = [int]$x.P; $s.Rows.Add($r) }
+
+    $p = New-Object System.Data.DataTable 'Processes'
+    foreach ($c in 'Name', 'User', 'Started', 'Path', 'CommandLine') { $null = $p.Columns.Add($c, [string]) }
+    foreach ($c in 'Id', 'Session') { $null = $p.Columns.Add($c, [int]) }
+    foreach ($c in 'WorkingSetMB', 'CpuSeconds') { $null = $p.Columns.Add($c, [double]) }
+    foreach ($x in $Client.Processes) { $r = $p.NewRow(); $r['Name'] = [string]$x.N; $r['Id'] = [int]$x.I; $r['Session'] = [int]$x.SE; $r['User'] = [string]$x.U; $r['Started'] = [string]$x.T; $r['WorkingSetMB'] = [double]$x.W; $r['CpuSeconds'] = [double]$x.C; $r['Path'] = [string]$x.E; $r['CommandLine'] = [string]$x.L; $p.Rows.Add($r) }
+
+    $c2 = New-Object System.Data.DataTable 'Cache'
+    foreach ($c in 'ContentId', 'Version', 'LastReferenced', 'Folder', 'CacheId') { $null = $c2.Columns.Add($c, [string]) }
+    $null = $c2.Columns.Add('SizeMB', [double]); $null = $c2.Columns.Add('References', [int]); $null = $c2.Columns.Add('Persist', [bool])
+    foreach ($x in $Client.Cache) { $r = $c2.NewRow(); $r['ContentId'] = [string]$x.ID; $r['Version'] = [string]$x.V; $r['SizeMB'] = [double]$x.MB; $r['References'] = [int]$x.R; $r['Persist'] = [bool]$x.P; $r['LastReferenced'] = [string]$x.L; $r['Folder'] = [string]$x.DIR; $r['CacheId'] = [string]$x.CID; $c2.Rows.Add($r) }
+    return @{ Services = $s; Processes = $p; Cache = $c2 }
+}
+
+function Apply-ClientFilters {
+    if ($script:ServicesTable) {
+        $t = $ui.SvcSearch.Text
+        if ([string]::IsNullOrWhiteSpace($t)) { $script:ServicesTable.DefaultView.RowFilter = '' }
+        else { $e = $t.Replace("'", "''").Replace('[', '[[]').Replace('%', '[%]').Replace('*', '[*]'); $script:ServicesTable.DefaultView.RowFilter = "Name LIKE '%$e%' OR DisplayName LIKE '%$e%' OR Account LIKE '%$e%'" }
+    }
+    if ($script:ProcessesTable) {
+        $t = $ui.ProcSearch.Text
+        if ([string]::IsNullOrWhiteSpace($t)) { $script:ProcessesTable.DefaultView.RowFilter = '' }
+        else { $e = $t.Replace("'", "''").Replace('[', '[[]').Replace('%', '[%]').Replace('*', '[*]'); $script:ProcessesTable.DefaultView.RowFilter = "Name LIKE '%$e%' OR User LIKE '%$e%' OR Path LIKE '%$e%' OR CommandLine LIKE '%$e%'" }
+    }
+}
+
+function Start-ClientRefresh {
+    Set-Busy $true "Reading client state of $($script:Device.Name) (Run Script)..."
+    Invoke-TKJob -Name 'Client' -Script $clientGetScript -Arguments @($script:Device.Name) -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok) { Show-Error "Client read failed: $($r.Error)"; return }
+        $v = $r.Value
+        $t = ConvertTo-ClientTables -Client $v
+        $script:ServicesTable = $t.Services; $script:ProcessesTable = $t.Processes; $script:CacheTable = $t.Cache
+        $ui.GridServices.ItemsSource = $script:ServicesTable.DefaultView
+        $ui.GridProcesses.ItemsSource = $script:ProcessesTable.DefaultView
+        $ui.GridCache.ItemsSource = $script:CacheTable.DefaultView
+        Apply-ClientFilters
+        $ov = "Read $(Get-Date -Format 'HH:mm:ss') from $($v.Host)`r`n`r`n"
+        $ov += (Format-Result -Object $v.Client) + "`r`n"
+        $ov += "Pending reboot:      $($v.Reboot.Pending)`r`n"
+        foreach ($reason in @($v.Reboot.Reasons)) { $ov += "    $reason`r`n" }
+        $ov += "ConfigMgr says:      pending=$($v.Reboot.CcmRebootPending) hard=$($v.Reboot.CcmIsHardRebootPending) deadline=$($v.Reboot.CcmRebootDeadlineUtc)`r`n"
+        if ($v.Error) { $ov += "`r`nErrors on the client: $($v.Error)`r`n" }
+        $ui.ClientOverview.Text = $ov
+        $used = 0.0; foreach ($x in $v.Cache) { $used += [double]$x.MB }
+        $ui.CacheInfo.Text = "$($v.Cache.Count) items, $([math]::Round($used, 1)) MB used of $($v.Client.CacheSizeMB) MB in $($v.Client.CacheLocation)"
+        $ui.ClientInfo.Text = "$($v.Services.Count) services, $($v.Processes.Count) processes, $($v.Cache.Count) cache items - read $(Get-Date -Format 'HH:mm:ss') ($($r.Seconds) s)"
+        $ui.StatusText.Text = "Client state read in $($r.Seconds) s"
+        $ui.StatusOperation.Text = "OperationId $($v.OperationId)"
+        Update-SelectionButtons
+    }
+}
+
+function Start-ClientManage {
+    param([string]$Target, [string]$Action, [string]$Name, [string]$Label)
+    $q = "$Action $Target '$Label' on $($script:Device.Name)?"
+    if ([System.Windows.MessageBox]::Show($window, $q, 'AZITC Toolkit', 'YesNo', 'Question') -ne 'Yes') { return }
+    Set-Busy $true "$Target $Action '$Label' on $($script:Device.Name)..."
+    Invoke-TKJob -Name "$Target $Action" -Script $clientManageScript -Arguments @($script:Device.Name, $Target, $Action, $Name) -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok) { Show-Error "$($r.Name) failed: $($r.Error)"; return }
+        $v = $r.Value
+        $line = "{0}  {1} {2} '{3}': exit {4}, before [{5}], after [{6}]" -f (Get-Date -Format 'HH:mm:ss'), $v.Target, $v.Action, $v.Name, $v.ScriptExitCode, $v.Before, $v.After
+        if (@($v.Done).Count) { $line += "`r`n    done: " + (@($v.Done) -join '; ') }
+        if (@($v.Skipped).Count) { $line += "`r`n    skipped: " + (@($v.Skipped) -join '; ') }
+        if ($v.Error) { $line += "`r`n    error: $($v.Error)" }
+        $ui.ClientText.Text = ($ui.ClientText.Text + $line + "`r`n").TrimStart()
+        $ui.StatusText.Text = "$($r.Name): exit $($v.ScriptExitCode), $($r.Seconds) s"
+        $ui.StatusOperation.Text = "OperationId $($v.OperationId)"
+        if ($v.Error) { Show-Error "$($r.Name): $($v.Error)" }
+        Start-ClientRefresh
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
+
+$ui.BtnAppInstall.Add_Click({ Start-CMAppAction -Action 'Install' })
+$ui.BtnAppUninstall.Add_Click({ Start-CMAppAction -Action 'Uninstall' })
+$ui.BtnAppRepair.Add_Click({ Start-CMAppAction -Action 'Repair' })
+$ui.GridApps.Add_SelectionChanged({ Update-SelectionButtons })
+$ui.BtnClientRefresh.Add_Click({ Start-ClientRefresh })
+$ui.SvcSearch.Add_TextChanged({ Apply-ClientFilters })
+$ui.ProcSearch.Add_TextChanged({ Apply-ClientFilters })
+$ui.GridServices.Add_SelectionChanged({ Update-SelectionButtons })
+$ui.GridProcesses.Add_SelectionChanged({ Update-SelectionButtons })
+$ui.GridCache.Add_SelectionChanged({ Update-SelectionButtons })
+$ui.BtnSvcStart.Add_Click({ $r = $ui.GridServices.SelectedItem; if ($r) { Start-ClientManage -Target 'Service' -Action 'Start' -Name ([string]$r.Row['Name']) -Label ([string]$r.Row['DisplayName']) } })
+$ui.BtnSvcStop.Add_Click({ $r = $ui.GridServices.SelectedItem; if ($r) { Start-ClientManage -Target 'Service' -Action 'Stop' -Name ([string]$r.Row['Name']) -Label ([string]$r.Row['DisplayName']) } })
+$ui.BtnSvcRestart.Add_Click({ $r = $ui.GridServices.SelectedItem; if ($r) { Start-ClientManage -Target 'Service' -Action 'Restart' -Name ([string]$r.Row['Name']) -Label ([string]$r.Row['DisplayName']) } })
+$ui.BtnProcKill.Add_Click({ $r = $ui.GridProcesses.SelectedItem; if ($r) { Start-ClientManage -Target 'Process' -Action 'Kill' -Name ([string]$r.Row['Id']) -Label ("$($r.Row['Name']) ($($r.Row['Id']))") } })
+$ui.BtnCacheDelete.Add_Click({ $r = $ui.GridCache.SelectedItem; if ($r) { Start-ClientManage -Target 'Cache' -Action 'Delete' -Name ([string]$r.Row['CacheId']) -Label ("$($r.Row['ContentId']) v$($r.Row['Version']), $($r.Row['SizeMB']) MB") } })
+$ui.BtnCacheClear.Add_Click({ Start-ClientManage -Target 'Cache' -Action 'Clear' -Name '' -Label 'every item that is not persisted and not in use' })
 
 $ui.BtnRefresh.Add_Click({ Start-Refresh })
 $ui.BtnInspect.Add_Click({ Start-Action -Action 'Inspect' -ReEvaluate $false })
@@ -652,7 +914,7 @@ $window.Add_Closed({
     if ($AutoCloseSeconds -gt 0) {
         $rows = 0; if ($script:SoftwareTable) { $rows = $script:SoftwareTable.Rows.Count }
         $apps = 0; if ($script:AppsTable) { $apps = $script:AppsTable.Rows.Count }
-        [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) handlerError='$($script:LastHandlerError)'")
+        [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) services=$(if ($script:ServicesTable) { $script:ServicesTable.Rows.Count } else { 0 }) processes=$(if ($script:ProcessesTable) { $script:ProcessesTable.Rows.Count } else { 0 }) handlerError='$($script:LastHandlerError)'")
     }
     if ($script:Job) { try { $script:Job.PowerShell.Stop() } catch { } }
     try { $script:Runspace.Close() } catch { }
