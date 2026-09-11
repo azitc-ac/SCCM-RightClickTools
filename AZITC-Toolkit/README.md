@@ -58,6 +58,30 @@ Approval: `ApprovalState` 3 = approved, 0 = waiting, 1 = denied. Running an unap
 gives 403 (RunScript) or 500 (InitiateClientOperationEx, "Script is not approved." in
 `SMSProv.log`).
 
+## Deploying to a site
+
+Two halves, two scripts, both from a copy of this folder on any machine that reaches the
+SMS Provider (the admin workstation is the natural place):
+
+```powershell
+# 1. the seven Run Scripts into the Scripts node - creates, updates changed ones (version + 1),
+#    recreates when a parameter set changed, approves where the author may approve
+.Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -SkipCertificateCheck -WhatIf
+.Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -SkipCertificateCheck
+
+# 2. the right-click action into every console that should have it (as administrator)
+.Install-AZITCTKConsoleExtension.ps1
+```
+
+What the site needs: a ConfigMgr administrator with script author rights (Full Administrator
+has them) running step 1; the AdminService reachable on the provider (`https://<provider>/AdminService`,
+port 443); `-SkipCertificateCheck` only while the provider uses its self-signed certificate.
+If the hierarchy has *Script authors require additional script approver* on, step 1 reports
+the scripts as *NOT approved* and a second administrator approves them once in the console -
+the window says which scripts are missing or unapproved when it opens. Step 2 needs the
+hierarchy setting *Only allow console extensions that are approved for the hierarchy* off.
+Re-running both steps after an update is safe: unchanged scripts are left alone.
+
 ## Installing the console action
 
 ```powershell
