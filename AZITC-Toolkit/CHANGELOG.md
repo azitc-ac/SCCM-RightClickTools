@@ -1,5 +1,28 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-14 - the provider is found, not typed; "HTTP 0" says why
+
+The first deployment attempt at a customer failed with `HTTP 0 on GET https://.../Script?$top=1`
+- a name that does not resolve, and a message that did not say so.
+
+* `Connect-TKAdminService` no longer needs `-SmsProvider`. Without it, `Get-TKSmsProviderCandidates`
+  lists what the machine knows: the console's connection history
+  (`HKCU\SOFTWARE\Microsoft\ConfigMgr10\AdminUI\MRU\*\ServerName`), the site server's identity
+  when run on the site server (`HKLM\SOFTWARE\Microsoft\SMS\Identification\Site Server`), the
+  local `SMS_ProviderLocation`; the first one that answers wins.
+* `Test-TKAdminService` probes one provider and turns a failure into a reason a person can act
+  on: name not resolved in DNS, no answer on 443, TLS rejected the certificate (then
+  `-SkipCertificateCheck`), 401 (not an administrator), 404 (a host without an AdminService).
+  `Invoke-TKRest` puts the same detail into its "HTTP 0" message.
+* `Publish-AZITCTKScripts.ps1` and `AZITC-TK.ps1` take `-SmsProvider` as optional; the window
+  title shows the provider that answered. The console action still passes `##SUB:__Server##`.
+* Publish loads CimCmdlets itself with WhatIf off - the automatic load under `-WhatIf` printed
+  five "Set Alias" lines before the plan.
+
+Checked on LAB01: detection finds `cm01.lab.example` from the console history; the placeholder
+name from the README fails with "does not resolve in DNS"; without the certificate bypass the
+message names TLS; publish and the window's self test run without a provider argument.
+
 ## 2026-09-11 (night, third round) - list the files of a log folder
 
 `AZITC-TK-Log-Get` v4 has a `Mode` parameter: `Tail` (as before) or `List`, which returns the

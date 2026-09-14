@@ -56,6 +56,7 @@ Set-StrictMode -Version 2.0
 
 $script:TKBaseUri = $null      # https://<provider>/AdminService/v1.0
 $script:TKWmiUri  = $null      # https://<provider>/AdminService/wmi
+$script:TKSmsProvider = $null  # the provider that answered
 
 # --- Connection -------------------------------------------------------------
 
@@ -81,10 +82,74 @@ namespace AZITC {
     [AZITC.TrustAllCerts]::Enable()
 }
 
+function Get-TKSmsProviderCandidates {
+    <#
+    .SYNOPSIS
+        Where this machine knows an SMS Provider from, in the order worth trying: the console's
+        last connections (HKCU ConfigMgr10\AdminUI\MRU), the site server's own identity when
+        this is the site server (HKLM SMS\Identification), and the local SMS_ProviderLocation.
+    #>
+    [CmdletBinding()]
+    param()
+    $list = New-Object System.Collections.Generic.List[object]
+    $add = { param($name, $source) if ($name -and -not ($list | Where-Object { $_.Name -ieq $name })) { $list.Add([pscustomobject]@{ Name = [string]$name; Source = $source }) } }
+    try {
+        foreach ($k in (Get-ChildItem -Path 'HKCU:\SOFTWARE\Microsoft\ConfigMgr10\AdminUI\MRU' -ErrorAction Stop | Sort-Object PSChildName)) {
+            $v = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+            if ($v -and $v.ServerName) { & $add $v.ServerName "console connection history $($k.PSChildName), site $($v.SiteCode)" }
+        }
+    } catch { }
+    try {
+        $id = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\SMS\Identification' -ErrorAction Stop
+        if ($id.'Site Server') { & $add $id.'Site Server' 'this machine is the site server' }
+    } catch { }
+    try {
+        $pl = Get-CimInstance -Namespace 'root\sms' -ClassName 'SMS_ProviderLocation' -ErrorAction Stop | Where-Object { $_.ProviderForLocalSite } | Select-Object -First 1
+        if ($pl -and $pl.Machine) { & $add $pl.Machine 'SMS_ProviderLocation on this machine' }
+    } catch { }
+    return $list.ToArray()
+}
+
+function Test-TKAdminService {
+    <#
+    .SYNOPSIS
+        One probe of https://<provider>/AdminService/v1.0/Script?$top=1. Returns Ok, Status and
+        a reason a person can act on - name not resolved, port closed, certificate rejected,
+        HTTP status - instead of "HTTP 0".
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$SmsProvider, [int]$TimeoutSec = 15)
+    $uri = "https://$SmsProvider/AdminService/v1.0/Script?`$top=1"
+    try {
+        $null = Invoke-WebRequest -Uri $uri -UseDefaultCredentials -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+        return [pscustomobject]@{ Ok = $true; Status = 200; Reason = 'answers'; Uri = $uri }
+    } catch {
+        $status = Get-TKHttpStatus -ErrorRecord $_
+        $inner = $_.Exception
+        while ($inner.InnerException) { $inner = $inner.InnerException }
+        $detail = $inner.Message
+        $reason = $_.Exception.Message
+        if ($status -eq 0) {
+            if ($detail -match 'resolved|aufgel|No such host|nicht bekannt') { $reason = "name '$SmsProvider' does not resolve in DNS ($detail)" }
+            elseif ($detail -match 'refused|verweigert|Unable to connect|keine Verbindung|timed out|Zeit') { $reason = "no answer on port 443 of '$SmsProvider' - AdminService not there, firewall, or the wrong machine ($detail)" }
+            elseif ($detail -match 'SSL|TLS|trust|certificate|Zertifikat|secure channel|Sicherheitskanal') { $reason = "TLS rejected the certificate of '$SmsProvider' - self-signed? then -SkipCertificateCheck ($detail)" }
+            else { $reason = "no HTTP answer from '$SmsProvider': $detail" }
+        } elseif ($status -eq 401) { $reason = "401 - $env:USERDOMAIN\$env:USERNAME is not a ConfigMgr administrator on this site, or Kerberos/NTLM to '$SmsProvider' failed" }
+        elseif ($status -eq 404) { $reason = "404 - the host answers but has no AdminService at /AdminService/v1.0 (not the SMS Provider?)" }
+        return [pscustomobject]@{ Ok = $false; Status = $status; Reason = $reason; Uri = $uri }
+    }
+}
+
 function Connect-TKAdminService {
+    <#
+    .SYNOPSIS
+        Sets the AdminService URIs and probes them. Without -SmsProvider the provider is taken
+        from what this machine knows (Get-TKSmsProviderCandidates); the first one that answers
+        wins. A provider that does not answer is reported with the reason, not with "HTTP 0".
+    #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][string]$SmsProvider,   # FQDN of the SMS Provider (##SUB:__Server## from the console)
+        [string]$SmsProvider = '',   # FQDN of the SMS Provider (##SUB:__Server## from the console); empty = detect
         [switch]$SkipCertificateCheck
     )
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
@@ -95,12 +160,26 @@ function Connect-TKAdminService {
         Enable-TKTrustAllCertificates
     }
 
-    $script:TKBaseUri = "https://$SmsProvider/AdminService/v1.0"
-    $script:TKWmiUri  = "https://$SmsProvider/AdminService/wmi"
+    $candidates = @()
+    if ($SmsProvider) { $candidates += [pscustomobject]@{ Name = $SmsProvider; Source = 'given' } }
+    else {
+        $candidates = @(Get-TKSmsProviderCandidates)
+        if ($candidates.Count -eq 0) { throw 'No SMS Provider given and none known to this machine (no console connection history, not a site server). Give -SmsProvider <FQDN>.' }
+    }
 
-    # Smoke test: one script row (small, needs only read on SMS Scripts)
-    $null = Invoke-TKRest -Method Get -Path 'Script?$top=1'
-    Write-Verbose "Connected to $script:TKBaseUri"
+    $tried = @()
+    foreach ($c in $candidates) {
+        $probe = Test-TKAdminService -SmsProvider $c.Name
+        if ($probe.Ok) {
+            $script:TKBaseUri = "https://$($c.Name)/AdminService/v1.0"
+            $script:TKWmiUri  = "https://$($c.Name)/AdminService/wmi"
+            $script:TKSmsProvider = $c.Name
+            Write-Verbose "Connected to $script:TKBaseUri ($($c.Source))"
+            return
+        }
+        $tried += "  $($c.Name) [$($c.Source)]: $($probe.Reason)"
+    }
+    throw ("Cannot reach the AdminService.`n" + ($tried -join "`n"))
 }
 
 function Invoke-TKRest {
@@ -137,6 +216,11 @@ function Invoke-TKRest {
             $stream = $_.Exception.Response.GetResponseStream()
             if ($stream) { $reader = New-Object System.IO.StreamReader($stream); $text = $reader.ReadToEnd(); $reader.Close() }
         } catch { }
+        if ($status -eq 0) {
+            # No HTTP answer at all: say why (DNS, port, TLS) instead of "HTTP 0".
+            $inner = $_.Exception; while ($inner.InnerException) { $inner = $inner.InnerException }
+            $text = "no HTTP answer - $($inner.Message)"
+        }
         $ex = New-Object System.Exception(("HTTP {0} on {1} {2}: {3}" -f $status, $Method.ToUpper(), $uri, $text), $_.Exception)
         $ex.Data['HttpStatus'] = $status
         throw $ex

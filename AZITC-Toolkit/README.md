@@ -66,12 +66,18 @@ SMS Provider (the admin workstation is the natural place):
 ```powershell
 # 1. the seven Run Scripts into the Scripts node - creates, updates changed ones (version + 1),
 #    recreates when a parameter set changed, approves where the author may approve
-.Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -SkipCertificateCheck -WhatIf
-.Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -SkipCertificateCheck
+.\Publish-AZITCTKScripts.ps1 -SkipCertificateCheck -WhatIf        # provider: the console's connection history
+.\Publish-AZITCTKScripts.ps1 -SkipCertificateCheck
+.\Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example    # or name it
 
 # 2. the right-click action into every console that should have it (as administrator)
-.Install-AZITCTKConsoleExtension.ps1
+.\Install-AZITCTKConsoleExtension.ps1
 ```
+
+`-SmsProvider` may be left out: the library takes the provider the console on this machine last
+connected to (or the site server itself when run there) and probes it. A provider that does not
+answer is reported with the reason - name not in DNS, port 443 closed, certificate rejected, no
+AdminService there - instead of "HTTP 0".
 
 What the site needs: a ConfigMgr administrator with script author rights (Full Administrator
 has them) running step 1; the AdminService reachable on the provider (`https://<provider>/AdminService`,

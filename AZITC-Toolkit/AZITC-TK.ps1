@@ -21,7 +21,7 @@
 .PARAMETER ResourceId
     ResourceId of the device (##SUB:ResourceID##). Resolved from the name when 0.
 .PARAMETER SmsProvider
-    FQDN of the SMS Provider (##SUB:__Server##).
+    FQDN of the SMS Provider (##SUB:__Server##). Empty: the console's connection history decides.
 .PARAMETER SiteCode
     Site code (##SUB:SiteCode##), shown in the title only.
 .PARAMETER SkipCertificateCheck
@@ -37,7 +37,7 @@
 param(
     [string]$DeviceName = '',
     [int]$ResourceId = 0,
-    [Parameter(Mandatory = $true)][string]$SmsProvider,
+    [string]$SmsProvider = '',
     [string]$SiteCode = '',
     [switch]$SkipCertificateCheck,
     [switch]$SelfTest,
@@ -139,6 +139,7 @@ $connectScript = {
         try { $s = Get-TKScript -Name $n -WarningAction SilentlyContinue; $scripts[$n] = "$($s.ScriptGuid) v$($s.ScriptVersion) approval=$($s.ApprovalState)" } catch { $scripts[$n] = "missing: $($_.Exception.Message)" }
     }
     [pscustomobject]@{
+        Provider      = [string]$script:TKSmsProvider
         Name          = [string]$dev.Name
         ResourceId    = [int]$dev.MachineId
         ClientVersion = [string]$dev.ClientVersion
@@ -214,6 +215,7 @@ if ($SelfTest) {
     $ps = [powershell]::Create(); $ps.Runspace = $script:Runspace
     $null = $ps.AddScript($connectScript.ToString(), $false).AddArgument($DeviceName).AddArgument($ResourceId)
     $dev = $ps.Invoke()[0]; $ps.Dispose()
+    "provider: $($dev.Provider)"
     "device: $($dev.Name) ($($dev.ResourceId)) client $($dev.ClientVersion) online=$($dev.Online)"
     foreach ($k in $dev.Scripts.Keys | Sort-Object) { "  $k -> $($dev.Scripts[$k])" }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -943,7 +945,7 @@ $window.Add_Loaded({
         if (-not $r.Ok) { Set-Busy $false; Show-Error "Connection failed: $($r.Error)"; return }
         $script:Device = $r.Value
         $ui.HeaderDevice.Text = $script:Device.Name
-        $window.Title = "AZITC Toolkit $toolVersion - $($script:Device.Name)$titleSite - $SmsProvider"
+        $window.Title = "AZITC Toolkit $toolVersion - $($script:Device.Name)$titleSite - $($script:Device.Provider)"
         $missing = @($script:Device.Scripts.GetEnumerator() | Where-Object { $_.Value -notlike '*approval=3' })
         if ($missing.Count -gt 0) {
             $ui.ClientText.Text = "Scripts not ready:`r`n" + (($missing | ForEach-Object { "    $($_.Key): $($_.Value)" }) -join "`r`n") + "`r`n"

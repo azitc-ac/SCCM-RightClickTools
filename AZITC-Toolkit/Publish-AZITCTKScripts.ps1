@@ -19,13 +19,15 @@
     -WhatIf shows what would happen without touching the site.
 
 .PARAMETER SmsProvider
-    FQDN of the SMS Provider.
+    FQDN of the SMS Provider. Empty: taken from this machine - the console's connection history
+    or, on the site server, its own identity - the first one that answers.
 .PARAMETER SkipCertificateCheck
     Accept a self-signed AdminService certificate.
 .PARAMETER NoApprove
     Create/update only.
 
 .EXAMPLE
+    .\Publish-AZITCTKScripts.ps1 -WhatIf                                   # provider from the console's history
     .\Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -WhatIf
     .\Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example -SkipCertificateCheck
 
@@ -34,13 +36,15 @@
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true)][string]$SmsProvider,
+    [string]$SmsProvider = '',
     [switch]$SkipCertificateCheck,
     [switch]$NoApprove
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path -Path $PSScriptRoot -ChildPath 'AZITC-TK-AdminService.ps1')
+# Loaded here on purpose: with -WhatIf the automatic module load would print "Set Alias" noise.
+& { $WhatIfPreference = $false; Import-Module CimCmdlets -ErrorAction SilentlyContinue }
 
 # The catalogue: file, timeout, description, parameters. Order and names match the scripts'
 # param() blocks; a change here means a change there.
@@ -88,6 +92,7 @@ $catalogue = @(
 )
 
 if ($SkipCertificateCheck) { Connect-TKAdminService -SmsProvider $SmsProvider -SkipCertificateCheck } else { Connect-TKAdminService -SmsProvider $SmsProvider }
+$SmsProvider = $script:TKSmsProvider
 Write-Host "Connected to $SmsProvider"
 
 # Two-key approval: read-only look at the hierarchy setting so the summary can say who approves.
