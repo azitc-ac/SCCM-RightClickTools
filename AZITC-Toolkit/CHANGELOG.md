@@ -1,4 +1,38 @@
-# Changelog - AZITC Toolkit
+﻿# Changelog - AZITC Toolkit
+
+## 2026-09-14 (evening) - the grid says what it means, not what the class calls it
+
+The user looked at the ConfigMgr applications grid and stopped at two cells: **Resolved =
+Installed** on an application that was installed anyway, and **Eval = 8**. The first is not a
+statement about the client at all - `ResolvedState` is what the *deployment* wants, so
+"Installed" there means "a required deployment targets this device" - and the second is the
+number for "waiting for a maintenance window". Neither reads as what it is.
+
+* Three columns instead of two numbers and an enum: **On the device** (Installed / Not
+  installed / Unknown, from `InstallState`), **Deployment** (required / optional / removal
+  required / not targeted, from `ResolvedState`) and **Status** (the `EvaluationState` in
+  words). The raw value of each sits in that cell's tooltip, because a log line or a web
+  search is keyed on it. `Get-TKInstallText`, `Get-TKTargetText`, `Get-TKEvalText` and
+  `Get-TKAppStateText` in `AZITC-TK.ps1` - not in the library, which is dot-sourced into the
+  background runspace only and does not exist on the UI thread where the grids are filled.
+* The software list's match column read `7-Zip - 26.02 - Installed/Installed`; it now reads
+  `7-Zip - 26.02 (required, installed)`. Header **ConfigMgr application (best guess)** instead
+  of "heuristic match", **Offered** instead of "Allowed", **Deployments** instead of "Depl.".
+* The watched course of an application action prints the state in words instead of the number,
+  and the failure message of `AZITC-TK-CMApp-Action` names the state ("The client could not
+  carry the action out: Waiting for a pending reboot") instead of only its number. The client
+  script's own table was reworded to match the window's - it runs on the client, where the
+  window's file does not exist, so the two tables are duplicates on purpose.
+* `reached=True timedOut=False` in the status bar became "reached the wanted state"; the client
+  overview's `pending=False hard=False deadline=` line became a sentence.
+
+**One thing to check on a client.** The published SDK list reads *"enforced, soft reboot
+pending"* for `EvaluationState` 13 - a finished installation - while this repo's table has
+"enforced and failed" and the watch loop in `AZITC-TK-CMApp-Action` breaks out of the wait on
+4 **and** 13, reporting a failure. If the published list is right, an installation that only
+wants a reboot is reported as failed. Nothing was changed: the wording of 13 stands as it was,
+values above 13 are shown as `State <n>` rather than guessed at, and the 4/13 test is
+untouched. It takes a client that actually reports 13 to settle it, and this session had none.
 
 ## 2026-09-14 (afternoon) - orphaned entries, and the exit code that never arrived
 

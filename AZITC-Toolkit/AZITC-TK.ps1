@@ -319,7 +319,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
               <DataGridTextColumn Header="Quiet" Binding="{Binding HasQuietString}" Width="45"/>
               <DataGridTextColumn Header="Repair" Binding="{Binding RepairPossible}" Width="50"/>
               <DataGridTextColumn Header="MB" Binding="{Binding SizeMB}" Width="55"/>
-              <DataGridTextColumn Header="CM application (heuristic match)" Binding="{Binding CMApp}" Width="2*"/>
+              <DataGridTextColumn Header="ConfigMgr application (best guess)" Binding="{Binding CMApp}" Width="2*"/>
             </DataGrid.Columns>
           </DataGrid>
           <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch" Background="#DDDDDD"/>
@@ -334,22 +334,34 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                   <Button x:Name="BtnAppUninstall" Content="Uninstall" IsEnabled="False"/>
                   <Button x:Name="BtnAppRepair" Content="Repair" IsEnabled="False"/>
                   <Button x:Name="BtnPolicyEval" Content="Policy + evaluate, then refresh" ToolTip="Client notification: machine policy, 20 s, application deployment evaluation, 15 s, then the software list is read again. What the grid shows is the client's last finding; this makes it a fresh one."/>
-                  <TextBlock Text="through CCM_Application on the client, watched until the state changes (AllowedActions decide what is offered)" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                  <TextBlock Text="through the ConfigMgr client, watched until the state changes; what the client offers is in the Offered column" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
                 </DockPanel>
                 <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
                   <DataGrid.Columns>
                     <DataGridTextColumn Header="Application (console)" Binding="{Binding ConsoleName}" Width="3*"/>
                     <DataGridTextColumn Header="Software Center title" Binding="{Binding Name}" Width="2*"/>
-                    <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="140"/>
-                    <DataGridTextColumn Header="Install state" Binding="{Binding InstallState}" Width="100"/>
-                    <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedState}" Width="90"/>
-                    <DataGridTextColumn Header="Eval" Binding="{Binding EvaluationState}" Width="45"/>
+                    <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="120"/>
+                    <DataGridTextColumn Header="On the device" Binding="{Binding InstallText}" Width="100">
+                      <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding InstallTip}"/></Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="Deployment" Binding="{Binding TargetText}" Width="110">
+                      <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding TargetTip}"/></Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="Status" Binding="{Binding EvaluationText}" Width="200">
+                      <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding EvaluationTip}"/></Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Header="Rev" Binding="{Binding Revision}" Width="45"/>
                     <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
-                    <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="130"/>
-                    <DataGridTextColumn Header="Superseded" Binding="{Binding Superseded}" Width="75"/>
-                    <DataGridTextColumn Header="Depl." Binding="{Binding Deployments}" Width="45"/>
+                    <DataGridTextColumn Header="Offered" Binding="{Binding AllowedActions}" Width="130"/>
+                    <DataGridTextColumn Header="Superseded" Binding="{Binding Superseded}" Width="85"/>
+                    <DataGridTextColumn Header="Deployments" Binding="{Binding Deployments}" Width="90"/>
                     <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="2*"/>
                   </DataGrid.Columns>
                 </DataGrid>
@@ -586,6 +598,85 @@ function Show-Error {
     [System.Windows.MessageBox]::Show($window, $Text, 'AZITC Toolkit', 'OK', 'Error') | Out-Null
 }
 
+# ---------------------------------------------------------------------------
+# Plain words for the client's state values
+#
+# What the client reports is an enum: ResolvedState "Installed", InstallState
+# "NotInstalled", EvaluationState 8. Put in a grid cell as it stands, none of
+# that says what it means - "Installed/Installed" reads like a contradiction
+# and "8" like nothing at all. So the window shows the meaning and keeps the
+# raw value in the cell's tooltip, because that is what a log line or a web
+# search is keyed on.
+#
+# The client scripts keep their own copies of these tables: they run on the
+# client, where nothing of this file exists.
+# ---------------------------------------------------------------------------
+
+# CCM_Application.EvaluationState, phrased the way the console phrases the same
+# situations.
+#
+# 13: the published SDK list reads "enforced, soft reboot pending" for this
+# value, which is a finished installation, not a failure - while this table and
+# the watch loop of AZITC-TK-CMApp-Action treat it as a failure. One of the two
+# is wrong, and it takes a client that actually reports 13 to tell which. The
+# meaning is left as it was until then, and values above 13 are shown by number
+# rather than guessed at. See CHANGELOG.
+$script:EvalText = @{
+    0  = 'No state reported'
+    1  = 'In the wanted state'
+    2  = 'Not required on this device'
+    3  = 'Ready to run, not started'
+    4  = 'Last attempt failed'
+    5  = 'Waiting for content to download'
+    6  = 'Waiting for content to download'
+    7  = 'Waiting for dependencies to download'
+    8  = 'Waiting for a maintenance window'
+    9  = 'Waiting for a pending reboot'
+    10 = 'Waiting its turn'
+    11 = 'Installing dependencies'
+    12 = 'Installing'
+    13 = 'Ran and failed'
+}
+
+function Get-TKEvalText {
+    param([int]$State)
+    if ($script:EvalText.ContainsKey($State)) { return $script:EvalText[$State] }
+    return "State $State"
+}
+
+# CCM_Application.InstallState - what is on the device.
+function Get-TKInstallText {
+    param([string]$State)
+    switch -Regex ($State) {
+        '^Installed$'    { return 'Installed' }
+        '^NotInstalled$' { return 'Not installed' }
+        '^Error$'        { return 'Error' }
+        '^\s*$'          { return 'Unknown' }
+        default          { return $State }
+    }
+}
+
+# CCM_Application.ResolvedState - what the deployment wants, which is a
+# different question from what is there. "Installed" here means "a required
+# deployment targets this device", not "it is installed".
+function Get-TKTargetText {
+    param([string]$State)
+    switch -Regex ($State) {
+        '^Installed$'   { return 'required' }
+        '^Available$'   { return 'optional' }
+        '^Uninstalled$' { return 'removal required' }
+        '^None$'        { return 'not targeted' }
+        '^\s*$'         { return 'not targeted' }
+        default         { return $State }
+    }
+}
+
+# The two together, for the one-line label in the software list.
+function Get-TKAppStateText {
+    param([string]$InstallState, [string]$ResolvedState)
+    return '{0}, {1}' -f (Get-TKTargetText -State $ResolvedState), (Get-TKInstallText -State $InstallState).ToLower()
+}
+
 function Format-Result {
     # Key: value lines for the action result pane, arrays indented.
     param($Object, [string[]]$Skip = @())
@@ -642,12 +733,14 @@ function ConvertTo-SoftwareTables {
             if ([string]$a.DL) { $score += 1 }
             if (-not [bool]$a.Superseded) { $score += 1 }
             if ($score -gt $bestScore) { $best = $a; $bestScore = $score }
-        }        if ($best) { $label = [string]$best.ConsoleName; if (-not $label) { $label = '{0} {1}' -f $best.N, $best.SV }; $r['CMApp'] = '{0} - {1}/{2}' -f $label, $best.IS, $best.RS } else { $r['CMApp'] = '' }
+        }        if ($best) { $label = [string]$best.ConsoleName; if (-not $label) { $label = '{0} {1}' -f $best.N, $best.SV }; $r['CMApp'] = '{0} ({1})' -f $label, (Get-TKAppStateText -InstallState $best.IS -ResolvedState $best.RS) } else { $r['CMApp'] = '' }
         $t.Rows.Add($r)
     }
 
     $a2 = New-Object System.Data.DataTable 'Apps'
     foreach ($c in 'Name', 'ConsoleName', 'Version', 'InstallState', 'ResolvedState', 'Deadline', 'AllowedActions', 'Publisher', 'Id') { $null = $a2.Columns.Add($c, [string]) }
+    # What the grid shows, and what the tooltip keeps of the value behind it.
+    foreach ($c in 'InstallText', 'InstallTip', 'TargetText', 'TargetTip', 'EvaluationText', 'EvaluationTip') { $null = $a2.Columns.Add($c, [string]) }
     $null = $a2.Columns.Add('Superseded', [bool]); $null = $a2.Columns.Add('Deployments', [int])
     $null = $a2.Columns.Add('EvaluationState', [int])
     $null = $a2.Columns.Add('Revision', [int])
@@ -656,6 +749,12 @@ function ConvertTo-SoftwareTables {
         $r['Name'] = [string]$a.N; $r['Version'] = [string]$a.SV; $r['InstallState'] = [string]$a.IS; $r['ResolvedState'] = [string]$a.RS
         $r['Deadline'] = [string]$a.DL; $r['AllowedActions'] = (@($a.AA) -join ', '); $r['Publisher'] = [string]$a.Pub; $r['Id'] = [string]$a.Id
         $r['EvaluationState'] = [int]$a.ES; $r['Revision'] = [int]$a.Rev
+        $r['InstallText']    = Get-TKInstallText -State ([string]$a.IS)
+        $r['InstallTip']     = 'CCM_Application.InstallState = {0}' -f $a.IS
+        $r['TargetText']     = Get-TKTargetText -State ([string]$a.RS)
+        $r['TargetTip']      = 'CCM_Application.ResolvedState = {0} - the state the deployment wants, not what is installed' -f $a.RS
+        $r['EvaluationText'] = Get-TKEvalText -State ([int]$a.ES)
+        $r['EvaluationTip']  = 'CCM_Application.EvaluationState = {0}' -f [int]$a.ES
         $r['ConsoleName'] = [string]$a.ConsoleName; $r['Superseded'] = [bool]$a.Superseded; $r['Deployments'] = [int]$a.Deployments
         $a2.Rows.Add($r)
     }
@@ -809,10 +908,10 @@ function Start-CMAppAction {
         $v = $r.Value
         $text = Format-Result -Object $v -Skip @('Schema', 'Kind', 'Before', 'After', 'Course')
         $text += "`nBefore: " + ($v.Before | ConvertTo-Json -Compress) + "`nCourse:`n"
-        foreach ($c in @($v.Course)) { $text += "    {0}  {1} / {2} {3}  {4}%`n" -f $c.TimeUtc, $c.InstallState, $c.EvaluationState, $c.EvaluationText, $c.PercentComplete }
+        foreach ($c in @($v.Course)) { $text += "    {0}  {1,-14} {2}  {3}%`n" -f $c.TimeUtc, (Get-TKInstallText -State ([string]$c.InstallState)), (Get-TKEvalText -State ([int]$c.EvaluationState)), $c.PercentComplete }
         $text += "After:  " + ($v.After | ConvertTo-Json -Compress)
         $ui.ActionResult.Text = $text
-        $ui.StatusText.Text = "$($r.Name): reached=$($v.Reached) timedOut=$($v.TimedOut) $($r.Seconds) s"
+        $ui.StatusText.Text = "$($r.Name): " + $(if ($v.Reached) { 'reached the wanted state' } elseif ($v.TimedOut) { 'still running when the wait ran out' } else { 'did not reach the wanted state' }) + ", $($r.Seconds) s"
         $ui.StatusOperation.Text = "OperationId $($v.OperationId)"
         Start-Refresh
     }
@@ -870,9 +969,14 @@ function Start-ClientRefresh {
         Apply-ClientFilters
         $ov = "Read $(Get-Date -Format 'HH:mm:ss') from $($v.Host)`r`n`r`n"
         $ov += (Format-Result -Object $v.Client) + "`r`n"
-        $ov += "Pending reboot:      $($v.Reboot.Pending)`r`n"
+        $ov += "Reboot pending:      " + $(if ([bool]$v.Reboot.Pending) { 'yes' } else { 'no' }) + "`r`n"
         foreach ($reason in @($v.Reboot.Reasons)) { $ov += "    $reason`r`n" }
-        $ov += "ConfigMgr says:      pending=$($v.Reboot.CcmRebootPending) hard=$($v.Reboot.CcmIsHardRebootPending) deadline=$($v.Reboot.CcmRebootDeadlineUtc)`r`n"
+        # The client keeps its own answer, and it is not always the same as Windows' -
+        # "hard" means it will not let the user postpone it.
+        $ccm = $(if ([bool]$v.Reboot.CcmRebootPending) { 'the ConfigMgr client wants a reboot' } else { 'the ConfigMgr client wants no reboot' })
+        if ([bool]$v.Reboot.CcmIsHardRebootPending) { $ccm += ', and it cannot be postponed' }
+        if ($v.Reboot.CcmRebootDeadlineUtc) { $ccm += " (deadline $($v.Reboot.CcmRebootDeadlineUtc) UTC)" }
+        $ov += "ConfigMgr client:    $ccm`r`n"
         if ($v.Error) { $ov += "`r`nErrors on the client: $($v.Error)`r`n" }
         $ui.ClientOverview.Text = $ov
         $used = 0.0; foreach ($x in $v.Cache) { $used += [double]$x.MB }

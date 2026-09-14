@@ -66,23 +66,30 @@ function Write-TKLog {
     } catch { }
 }
 
-# CCM_Application.EvaluationState, from the client SDK documentation of the class. Values
-# above 13 exist (waiting for user session, reboot, ...) and are reported by number only.
+# CCM_Application.EvaluationState, from the client SDK documentation of the class, worded as
+# the window words it (AZITC-TK.ps1 holds the same table - this script runs on the client,
+# where the window's file does not exist). Values above 13 exist (waiting for a user session,
+# for a reboot, ...) and are reported by number only.
+#
+# 13: the published SDK list reads "enforced, soft reboot pending" for this value, a finished
+# installation rather than a failure - while this table and the watch loop below treat it as a
+# failure. One of the two is wrong and only a client that reports 13 can settle it; nothing was
+# changed until then. See CHANGELOG.
 $EvalText = @{
-    0  = 'No state information'
-    1  = 'Enforced to the resolved state'
-    2  = 'Not required on the client'
-    3  = 'Available for enforcement'
-    4  = 'Last enforcement failed'
-    5  = 'Waiting for content download'
-    6  = 'Waiting for content download'
+    0  = 'No state reported'
+    1  = 'In the wanted state'
+    2  = 'Not required on this device'
+    3  = 'Ready to run, not started'
+    4  = 'Last attempt failed'
+    5  = 'Waiting for content to download'
+    6  = 'Waiting for content to download'
     7  = 'Waiting for dependencies to download'
-    8  = 'Waiting for a service window'
+    8  = 'Waiting for a maintenance window'
     9  = 'Waiting for a pending reboot'
-    10 = 'Waiting for serialized enforcement'
-    11 = 'Enforcing dependencies'
-    12 = 'Enforcing'
-    13 = 'Enforced and failed'
+    10 = 'Waiting its turn'
+    11 = 'Installing dependencies'
+    12 = 'Installing'
+    13 = 'Ran and failed'
 }
 
 $result = [ordered]@{
@@ -229,6 +236,10 @@ if ($final) { $result.After = Get-State -App $final }
 $result.Reached = $reached
 $result.TimedOut = (-not $reached -and -not $failed)
 
-if ($failed) { $result.Error = "Enforcement failed (EvaluationState $($result.After.EvaluationState), ErrorCode $($result.After.ErrorCode))."; Complete-Script -Code 1 }
+if ($failed) {
+    $reason = $EvalText[[int]$result.After.EvaluationState]; if (-not $reason) { $reason = "state $($result.After.EvaluationState)" }
+    $result.Error = "The client could not carry the action out: $reason (EvaluationState $($result.After.EvaluationState), ErrorCode $($result.After.ErrorCode))."
+    Complete-Script -Code 1
+}
 if ($result.TimedOut) { $result.Error = "Not finished after $TimeoutMin min - the client is still working on it (see After)."; Complete-Script -Code 1 }
 Complete-Script -Code 0
