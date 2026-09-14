@@ -178,6 +178,16 @@ $logScript = {
     Get-TKLog -DeviceName $DeviceName -LogName $LogName -Lines $Lines -Pattern $Pattern -Mode $Mode
 }
 
+$policyEvalScript = {
+    param($ResourceId)
+    # Machine policy first, then the evaluation of it - with the pauses the client needs.
+    $a = Send-TKClientNotification -ResourceId $ResourceId -Action MachinePolicy
+    Start-Sleep -Seconds 20
+    $b = Send-TKClientNotification -ResourceId $ResourceId -Action AppDeploymentEval
+    Start-Sleep -Seconds 15
+    [pscustomobject]@{ PolicyOperationId = $a.OperationId; EvalOperationId = $b.OperationId }
+}
+
 $notifyScript = {
     param($ResourceId, $Action)
     Send-TKClientNotification -ResourceId $ResourceId -Action $Action
@@ -323,6 +333,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                   <Button x:Name="BtnAppInstall" Content="Install" IsEnabled="False"/>
                   <Button x:Name="BtnAppUninstall" Content="Uninstall" IsEnabled="False"/>
                   <Button x:Name="BtnAppRepair" Content="Repair" IsEnabled="False"/>
+                  <Button x:Name="BtnPolicyEval" Content="Policy + evaluate, then refresh" ToolTip="Client notification: machine policy, 20 s, application deployment evaluation, 15 s, then the software list is read again. What the grid shows is the client's last finding; this makes it a fresh one."/>
                   <TextBlock Text="through CCM_Application on the client, watched until the state changes (AllowedActions decide what is offered)" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
                 </DockPanel>
                 <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
@@ -511,7 +522,7 @@ $script:ServicesTable = $null
 $script:ProcessesTable = $null
 $script:CacheTable = $null
 $script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnRemoveEntry, $ui.BtnLog, $ui.BtnLogList,
-    $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair,
+    $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair, $ui.BtnPolicyEval,
     $ui.BtnClientRefresh, $ui.BtnSvcStart, $ui.BtnSvcStop, $ui.BtnSvcRestart, $ui.BtnProcKill, $ui.BtnCacheDelete, $ui.BtnCacheClear,
     $ui.BtnNotifyPolicy, $ui.BtnNotifyAppEval, $ui.BtnNotifySumEval, $ui.BtnNotifyHwInv, $ui.BtnNotifySwInv, $ui.BtnNotifyDdr, $ui.BtnNotifyCompliance,
     $ui.BtnScriptPolicy, $ui.BtnScriptAppEval, $ui.BtnScriptAll, $ui.BtnScriptHwInv, $ui.BtnScriptSwInv, $ui.BtnScriptUpdScan)
@@ -899,6 +910,16 @@ function Start-ClientManage {
 # Wiring
 # ---------------------------------------------------------------------------
 
+$ui.BtnPolicyEval.Add_Click({
+    Set-Busy $true "Machine policy, then application deployment evaluation on $($script:Device.Name) (about 40 s)..."
+    Invoke-TKJob -Name 'Policy + evaluate' -Script $policyEvalScript -Arguments @($script:Device.ResourceId) -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok) { Show-Error "Policy + evaluate failed: $($r.Error)"; return }
+        $ui.StatusText.Text = "Policy (op $($r.Value.PolicyOperationId)) and evaluation (op $($r.Value.EvalOperationId)) sent - reading the list again"
+        Start-Refresh
+    }
+})
 $ui.BtnAppInstall.Add_Click({ Start-CMAppAction -Action 'Install' })
 $ui.BtnAppUninstall.Add_Click({ Start-CMAppAction -Action 'Uninstall' })
 $ui.BtnAppRepair.Add_Click({ Start-CMAppAction -Action 'Repair' })
