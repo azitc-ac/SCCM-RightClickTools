@@ -66,15 +66,16 @@ function Write-TKLog {
     } catch { }
 }
 
-# CCM_Application.EvaluationState, from the client SDK documentation of the class, worded as
-# the window words it (AZITC-TK.ps1 holds the same table - this script runs on the client,
-# where the window's file does not exist). Values above 13 exist (waiting for a user session,
-# for a reboot, ...) and are reported by number only.
+# CCM_Application.EvaluationState, worded as the window words it (AZITC-TK.ps1 holds the same
+# table - this script runs on the client, where the window's file does not exist).
 #
-# 13: the published SDK list reads "enforced, soft reboot pending" for this value, a finished
-# installation rather than a failure - while this table and the watch loop below treat it as a
-# failure. One of the two is wrong and only a client that reports 13 can settle it; nothing was
-# changed until then. See CHANGELOG.
+# 0-12 were read from the client SDK documentation. 14-28 are the published SDK list and have
+# never been seen on a site; they are here so a result reads as something, and the watch loop
+# below deliberately does not act on them.
+#
+# 13 is the one value this repo and that list disagree on - the list reads "enforced, soft
+# reboot pending", a finished installation, while this table and the loop below call it a
+# failure. The repo's own reading stands until a client reports a 13. See CHANGELOG.
 $EvalText = @{
     0  = 'No state reported'
     1  = 'In the wanted state'
@@ -90,6 +91,22 @@ $EvalText = @{
     11 = 'Installing dependencies'
     12 = 'Installing'
     13 = 'Ran and failed'
+    # --- from here down: the published list, not seen on a site ---
+    14 = 'Ran, reboot required'
+    15 = 'An update is waiting to be installed'
+    16 = 'Evaluation failed'
+    17 = 'Waiting for a user to be logged on'
+    18 = 'Waiting for all users to log off'
+    19 = 'Waiting for a user to log on'
+    20 = 'Waiting to try again'
+    21 = 'Waiting for presentation mode to end'
+    22 = 'Downloading content in advance'
+    23 = 'Downloading dependencies in advance'
+    24 = 'Content download failed'
+    25 = 'Downloading in advance failed'
+    26 = 'Content downloaded'
+    27 = 'Checking after the run'
+    28 = 'Waiting for a network connection'
 }
 
 $result = [ordered]@{
@@ -218,6 +235,9 @@ do {
     $sig = "$($st.InstallState)|$($st.EvaluationState)|$($st.PercentComplete)"
     if ($sig -ne $last) { $course.Add($st); $last = $sig }
     if ($st.EvaluationState -in @(11, 12)) { $sawEnforcing = $true }
+    # Only the two values this site has watched a client report end the wait. 16, 24 and 25 are
+    # failures in the published list too, but acting on an unconfirmed number would cut the
+    # watch of a run that is still going; the window colours them red, which costs nothing.
     if ($st.EvaluationState -in @(4, 13)) { $failed = $true; break }
     $isInstalled = ($st.InstallState -eq 'Installed')
     # Done when the state flipped to what was asked for and the client is no longer enforcing.

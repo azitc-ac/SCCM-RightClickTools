@@ -36,6 +36,21 @@ three out: *required deployment, not installed on the device. Client state: Wait
 maintenance window.* Sorting by the column puts Failed on top, which is where it belongs.
 **Possible actions** is the last rename; "Offered" did not say offered by whom.
 
+**The states nobody here has seen.** `EvaluationState` 14 to 28 were shown as `State 17` and
+the like, which is barely better than the bare number the user complained about. They are in
+the table now, worded the same way as the rest and taken from the published SDK list: waiting
+for a user to be logged on, waiting to try again, waiting for presentation mode to end,
+download failed, and the rest. None of them has been watched on a client from here, so the
+tooltip of such a cell says where the sentence comes from, and a value the table still does
+not know reads "no meaning known for this value".
+
+Where they are acted on differs on purpose. The window may colour 16, 24 and 25 red, because a
+colour that turns out wrong costs a glance. The watch loop in `AZITC-TK-CMApp-Action` still
+ends only on 4 and 13, the two this site has actually reported: cutting the watch of a run
+that is still going, on the strength of a number nobody has seen, is a different kind of
+mistake. The tooltip also repeats the sentence itself now, because the column is narrower
+than the longest of them.
+
 **One thing to check on a client.** The published SDK list reads *"enforced, soft reboot
 pending"* for `EvaluationState` 13 - a finished installation - while this repo's table has
 "enforced and failed" and the watch loop in `AZITC-TK-CMApp-Action` breaks out of the wait on

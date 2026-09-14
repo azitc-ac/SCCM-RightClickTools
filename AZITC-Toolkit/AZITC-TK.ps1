@@ -376,7 +376,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                         <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding TargetTip}"/></Style>
                       </DataGridTextColumn.ElementStyle>
                     </DataGridTextColumn>
-                    <DataGridTextColumn Header="Status" Binding="{Binding EvaluationText}" Width="200">
+                    <DataGridTextColumn Header="Status" Binding="{Binding EvaluationText}" Width="215">
                       <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding EvaluationTip}"/></Style>
                       </DataGridTextColumn.ElementStyle>
@@ -639,12 +639,16 @@ function Show-Error {
 # CCM_Application.EvaluationState, phrased the way the console phrases the same
 # situations.
 #
-# 13: the published SDK list reads "enforced, soft reboot pending" for this
-# value, which is a finished installation, not a failure - while this table and
-# the watch loop of AZITC-TK-CMApp-Action treat it as a failure. One of the two
-# is wrong, and it takes a client that actually reports 13 to tell which. The
-# meaning is left as it was until then, and values above 13 are shown by number
-# rather than guessed at. See CHANGELOG.
+# 0-12 were read from the client SDK documentation when this window was built.
+# 13 and above have never been seen on a site: 14-28 are the published SDK list,
+# and the tooltip of such a cell says so, because a plain number told the reader
+# nothing at all and an unconfirmed sentence at least points somewhere.
+#
+# 13 is the one value this repo and that list disagree on - the list reads
+# "enforced, soft reboot pending", a finished installation, while this table and
+# the watch loop of AZITC-TK-CMApp-Action call it a failure. The repo's own
+# reading stands until a client reports a 13, because flipping it would also
+# flip a red light to amber and end the watch loop later. See CHANGELOG.
 $script:EvalText = @{
     0  = 'No state reported'
     1  = 'In the wanted state'
@@ -660,12 +664,42 @@ $script:EvalText = @{
     11 = 'Installing dependencies'
     12 = 'Installing'
     13 = 'Ran and failed'
+    # --- from here down: the published list, not seen on a site ---
+    14 = 'Ran, reboot required'
+    15 = 'An update is waiting to be installed'
+    16 = 'Evaluation failed'
+    17 = 'Waiting for a user to be logged on'
+    18 = 'Waiting for all users to log off'
+    19 = 'Waiting for a user to log on'
+    20 = 'Waiting to try again'
+    21 = 'Waiting for presentation mode to end'
+    22 = 'Downloading content in advance'
+    23 = 'Downloading dependencies in advance'
+    24 = 'Content download failed'
+    25 = 'Downloading in advance failed'
+    26 = 'Content downloaded'
+    27 = 'Checking after the run'
+    28 = 'Waiting for a network connection'
 }
+
+# Nobody here has watched a client report one of these; the tooltip says so.
+$script:EvalUnverified = 14..28
 
 function Get-TKEvalText {
     param([int]$State)
     if ($script:EvalText.ContainsKey($State)) { return $script:EvalText[$State] }
     return "State $State"
+}
+
+# The tooltip of a status cell: the sentence again, because the column is
+# narrower than some of them, then where the value came from.
+function Get-TKEvalTip {
+    param([int]$State)
+    $tip = '{0} - CCM_Application.EvaluationState = {1}' -f (Get-TKEvalText -State $State), $State
+    if ($State -eq 13) { $tip += ' - never seen on a site, and the published SDK list reads it as a finished run waiting for a reboot instead' }
+    elseif ($script:EvalUnverified -contains $State) { $tip += ' - meaning taken from the published SDK list, never seen on a site' }
+    elseif (-not $script:EvalText.ContainsKey($State)) { $tip += ' - no meaning known for this value' }
+    return $tip
 }
 
 # CCM_Application.InstallState - what is on the device.
@@ -712,8 +746,11 @@ function Get-TKDeploymentVerdict {
     $installed = ($InstallState -eq 'Installed')
     if ($ResolvedState -eq 'None' -or [string]::IsNullOrWhiteSpace($ResolvedState)) { return 'not targeted' }
     if ($ResolvedState -eq 'Available' -and -not $installed) { return 'offered' }
-    if ($EvaluationState -in @(4, 13)) { return 'Failed' }
-    if ($EvaluationState -in @(3, 5, 6, 7, 8, 9, 10, 11, 12)) { return 'Pending' }
+    # Display only, so the states that were never observed may be used here: a
+    # colour that turns out wrong costs a glance. The watch loop on the client
+    # keeps to the two values this site has actually seen.
+    if ($EvaluationState -in @(4, 13, 16, 24, 25)) { return 'Failed' }
+    if ($EvaluationState -in @(3, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 26, 27, 28)) { return 'Pending' }
 
     $reached = switch ($ResolvedState) {
         'Uninstalled' { -not $installed }
@@ -815,7 +852,7 @@ function ConvertTo-SoftwareTables {
         $r['TargetText']     = Get-TKTargetText -State ([string]$a.RS)
         $r['TargetTip']      = 'CCM_Application.ResolvedState = {0} - the state the deployment wants, not what is installed' -f $a.RS
         $r['EvaluationText'] = Get-TKEvalText -State ([int]$a.ES)
-        $r['EvaluationTip']  = 'CCM_Application.EvaluationState = {0}' -f [int]$a.ES
+        $r['EvaluationTip']  = Get-TKEvalTip -State ([int]$a.ES)
         $r['Verdict']        = Get-TKDeploymentVerdict    -InstallState ([string]$a.IS) -ResolvedState ([string]$a.RS) -EvaluationState ([int]$a.ES)
         $r['VerdictTip']     = Get-TKDeploymentVerdictTip -InstallState ([string]$a.IS) -ResolvedState ([string]$a.RS) -EvaluationState ([int]$a.ES)
         $r['ConsoleName'] = [string]$a.ConsoleName; $r['Superseded'] = [bool]$a.Superseded; $r['Deployments'] = [int]$a.Deployments
