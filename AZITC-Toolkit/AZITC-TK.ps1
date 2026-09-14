@@ -334,7 +334,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                   <Button x:Name="BtnAppUninstall" Content="Uninstall" IsEnabled="False"/>
                   <Button x:Name="BtnAppRepair" Content="Repair" IsEnabled="False"/>
                   <Button x:Name="BtnPolicyEval" Content="Policy + evaluate, then refresh" ToolTip="Client notification: machine policy, 20 s, application deployment evaluation, 15 s, then the software list is read again. What the grid shows is the client's last finding; this makes it a fresh one."/>
-                  <TextBlock Text="through the ConfigMgr client, watched until the state changes; what the client offers is in the Offered column" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                  <TextBlock Text="through the ConfigMgr client, watched until the state changes; what the client offers is in the Possible actions column" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
                 </DockPanel>
                 <DataGrid x:Name="GridApps" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" CanUserSortColumns="True"
                           HeadersVisibility="Column" GridLinesVisibility="Horizontal" AlternatingRowBackground="#FAFAFA" RowHeight="22">
@@ -342,6 +342,30 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                     <DataGridTextColumn Header="Application (console)" Binding="{Binding ConsoleName}" Width="3*"/>
                     <DataGridTextColumn Header="Software Center title" Binding="{Binding Name}" Width="2*"/>
                     <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="120"/>
+                    <DataGridTextColumn Header="Target reached" Binding="{Binding Verdict}" Width="105">
+                      <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                          <Setter Property="ToolTip" Value="{Binding VerdictTip}"/>
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Verdict}" Value="OK">
+                              <Setter Property="Foreground" Value="#1B7F2E"/><Setter Property="FontWeight" Value="Bold"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Verdict}" Value="Pending">
+                              <Setter Property="Foreground" Value="#B36B00"/><Setter Property="FontWeight" Value="Bold"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Verdict}" Value="Failed">
+                              <Setter Property="Foreground" Value="#C62828"/><Setter Property="FontWeight" Value="Bold"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Verdict}" Value="offered">
+                              <Setter Property="Foreground" Value="#808080"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Verdict}" Value="not targeted">
+                              <Setter Property="Foreground" Value="#808080"/>
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Header="On the device" Binding="{Binding InstallText}" Width="100">
                       <DataGridTextColumn.ElementStyle>
                         <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding InstallTip}"/></Style>
@@ -359,7 +383,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                     </DataGridTextColumn>
                     <DataGridTextColumn Header="Rev" Binding="{Binding Revision}" Width="45"/>
                     <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
-                    <DataGridTextColumn Header="Offered" Binding="{Binding AllowedActions}" Width="130"/>
+                    <DataGridTextColumn Header="Possible actions" Binding="{Binding AllowedActions}" Width="140"/>
                     <DataGridTextColumn Header="Superseded" Binding="{Binding Superseded}" Width="85"/>
                     <DataGridTextColumn Header="Deployments" Binding="{Binding Deployments}" Width="90"/>
                     <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="2*"/>
@@ -671,6 +695,43 @@ function Get-TKTargetText {
     }
 }
 
+# Has the deployment got what it wanted? One word, for the column that is read
+# at a glance and nowhere else.
+#
+#   OK           the device is in the state the deployment asks for
+#   Pending      on its way, waiting, or asked for and not there yet
+#   Failed       the client's last attempt failed
+#   offered      an available deployment nobody has installed - not a fault
+#   not targeted no deployment asks anything of this device
+#
+# The client's own EvaluationState decides before the pair of states does: it
+# is the only one of the three that knows about a failure or a wait.
+function Get-TKDeploymentVerdict {
+    param([string]$InstallState, [string]$ResolvedState, [int]$EvaluationState)
+
+    $installed = ($InstallState -eq 'Installed')
+    if ($ResolvedState -eq 'None' -or [string]::IsNullOrWhiteSpace($ResolvedState)) { return 'not targeted' }
+    if ($ResolvedState -eq 'Available' -and -not $installed) { return 'offered' }
+    if ($EvaluationState -in @(4, 13)) { return 'Failed' }
+    if ($EvaluationState -in @(3, 5, 6, 7, 8, 9, 10, 11, 12)) { return 'Pending' }
+
+    $reached = switch ($ResolvedState) {
+        'Uninstalled' { -not $installed }
+        default       { $installed }
+    }
+    if ($reached) { return 'OK' }
+    return 'Pending'
+}
+
+# Why the verdict reads the way it does - the tooltip of that cell.
+function Get-TKDeploymentVerdictTip {
+    param([string]$InstallState, [string]$ResolvedState, [int]$EvaluationState)
+    return '{0} deployment, {1} on the device. Client state: {2}.' -f
+        (Get-TKTargetText -State $ResolvedState),
+        (Get-TKInstallText -State $InstallState).ToLower(),
+        (Get-TKEvalText -State $EvaluationState)
+}
+
 # The two together, for the one-line label in the software list.
 function Get-TKAppStateText {
     param([string]$InstallState, [string]$ResolvedState)
@@ -740,7 +801,7 @@ function ConvertTo-SoftwareTables {
     $a2 = New-Object System.Data.DataTable 'Apps'
     foreach ($c in 'Name', 'ConsoleName', 'Version', 'InstallState', 'ResolvedState', 'Deadline', 'AllowedActions', 'Publisher', 'Id') { $null = $a2.Columns.Add($c, [string]) }
     # What the grid shows, and what the tooltip keeps of the value behind it.
-    foreach ($c in 'InstallText', 'InstallTip', 'TargetText', 'TargetTip', 'EvaluationText', 'EvaluationTip') { $null = $a2.Columns.Add($c, [string]) }
+    foreach ($c in 'InstallText', 'InstallTip', 'TargetText', 'TargetTip', 'EvaluationText', 'EvaluationTip', 'Verdict', 'VerdictTip') { $null = $a2.Columns.Add($c, [string]) }
     $null = $a2.Columns.Add('Superseded', [bool]); $null = $a2.Columns.Add('Deployments', [int])
     $null = $a2.Columns.Add('EvaluationState', [int])
     $null = $a2.Columns.Add('Revision', [int])
@@ -755,6 +816,8 @@ function ConvertTo-SoftwareTables {
         $r['TargetTip']      = 'CCM_Application.ResolvedState = {0} - the state the deployment wants, not what is installed' -f $a.RS
         $r['EvaluationText'] = Get-TKEvalText -State ([int]$a.ES)
         $r['EvaluationTip']  = 'CCM_Application.EvaluationState = {0}' -f [int]$a.ES
+        $r['Verdict']        = Get-TKDeploymentVerdict    -InstallState ([string]$a.IS) -ResolvedState ([string]$a.RS) -EvaluationState ([int]$a.ES)
+        $r['VerdictTip']     = Get-TKDeploymentVerdictTip -InstallState ([string]$a.IS) -ResolvedState ([string]$a.RS) -EvaluationState ([int]$a.ES)
         $r['ConsoleName'] = [string]$a.ConsoleName; $r['Superseded'] = [bool]$a.Superseded; $r['Deployments'] = [int]$a.Deployments
         $a2.Rows.Add($r)
     }

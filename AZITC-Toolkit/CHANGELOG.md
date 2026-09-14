@@ -26,6 +26,16 @@ number for "waiting for a maintenance window". Neither reads as what it is.
 * `reached=True timedOut=False` in the status bar became "reached the wanted state"; the client
   overview's `pending=False hard=False deadline=` line became a sentence.
 
+**Target reached.** The question the grid is opened for - did the deployment get what it asked
+for - was still spread over three columns. A first column now answers it in one word, coloured:
+**OK** green, **Pending** amber, **Failed** red, *offered* and *not targeted* grey because
+neither is a fault. `Get-TKDeploymentVerdict` lets the client's own `EvaluationState` decide
+first - it is the only one of the three values that knows about a failure or a wait - and falls
+back to comparing what is installed against what the deployment wants. The tooltip spells the
+three out: *required deployment, not installed on the device. Client state: Waiting for a
+maintenance window.* Sorting by the column puts Failed on top, which is where it belongs.
+**Possible actions** is the last rename; "Offered" did not say offered by whom.
+
 **One thing to check on a client.** The published SDK list reads *"enforced, soft reboot
 pending"* for `EvaluationState` 13 - a finished installation - while this repo's table has
 "enforced and failed" and the watch loop in `AZITC-TK-CMApp-Action` breaks out of the wait on
