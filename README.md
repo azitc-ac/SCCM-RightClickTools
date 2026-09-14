@@ -45,8 +45,8 @@ read from the console's own `XmlStorage\ConsoleRoot`:
 
 ## Repository notes
 
-`CLAUDE.md` carries the working rules; `AZITC-Toolkit\CHANGELOG.md` is the dated log of what
-was built, measured and found on a real site. All `.ps1` files are UTF-8 with BOM and CRLF. The
+`AZITC-Toolkit\CHANGELOG.md` is the dated log of what was built, measured and found on a
+real site. All `.ps1` files are UTF-8 with BOM and CRLF. The
 toolkit's version (`AZITC-Toolkit\VERSION`, shown in the window title) is raised with every
 commit by the pre-commit hook in `.githooks` - `git config core.hooksPath .githooks` once per
 clone.
