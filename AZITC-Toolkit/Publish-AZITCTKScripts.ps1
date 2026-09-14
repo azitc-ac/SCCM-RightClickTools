@@ -55,7 +55,7 @@ $catalogue = @(
     @{ Name = 'AZITC-TK-Software-Action'; Timeout = 1800
        Description = 'AZITC Toolkit - inspect, uninstall or repair one ARP entry (MSI / QuietUninstallString / Inno / NSIS / ExtraArgs); JSON result.'
        Parameters = @(
-           @{ Name = 'Action';      Type = 'System.String'; Required = $true;  Default = '';   Values = @('Inspect', 'Uninstall', 'Repair') },
+           @{ Name = 'Action';      Type = 'System.String'; Required = $true;  Default = '';   Values = @('Inspect', 'Uninstall', 'Repair', 'RemoveEntry') },
            @{ Name = 'Key';         Type = 'System.String'; Required = $true;  Default = '' },
            @{ Name = 'ExtraArgs';   Type = 'System.String'; Required = $false; Default = '' },
            @{ Name = 'TimeoutMin';  Type = 'System.Int32';  Required = $false; Default = '15' },
@@ -132,18 +132,29 @@ foreach ($item in $catalogue) {
         $full = @((Invoke-TKRest -Method Get -Route wmi -Path "SMS_Scripts('$guid')").value)[0]
         $siteParams = @($full.Parameterlist | ForEach-Object { [string]$_.ParameterName } | Sort-Object)
         $wantParams = @($item.Parameters | ForEach-Object { [string]$_.Name } | Sort-Object)
+        # The definition the site holds (base64 XML) against the one the catalogue produces:
+        # allowed values, types, defaults and required flags count, not only the names. A
+        # changed definition with the same names goes through UpdateScript and keeps the GUID.
+        $wantDef = ''
+        if ($item.Parameters.Count -gt 0) { $wantDef = (New-TKScriptParameterXml -Parameters $item.Parameters).Definition }
+        $siteDef = [string]$full.ParamsDefinition
+        if ($siteDef -and -not $siteDef.TrimStart().StartsWith('<')) { try { $siteDef = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($siteDef)) } catch { } }
+        $defChanged = ($siteDef -ne $wantDef)
+        $defB64 = ''
+        if ($wantDef) { $defB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($wantDef)) }
         if (($siteParams -join ',') -ne ($wantParams -join ',')) {
-            $state = 'recreated (parameters changed)'
+            $state = 'recreated (parameter set changed)'
             if ($PSCmdlet.ShouldProcess($name, 'Delete and create anew')) {
                 $s = Register-TKScript -Name $name -File $file -Timeout $item.Timeout -Description $item.Description -Parameters $item.Parameters -Replace
                 $guid = $s.ScriptGuid; $version = $s.ScriptVersion; $approval = [int]$s.ApprovalState
             }
-        } elseif ([string]$cur.ScriptHash -ne $hash -or [int]$full.Timeout -ne $item.Timeout) {
+        } elseif ([string]$cur.ScriptHash -ne $hash -or [int]$full.Timeout -ne $item.Timeout -or $defChanged) {
             $newVersion = ([int]$version + 1).ToString()
             $state = "updated to v$newVersion"
+            if ($defChanged -and [string]$cur.ScriptHash -eq $hash) { $state += ' (parameter definition)' }
             if ($PSCmdlet.ShouldProcess($name, "Update to v$newVersion")) {
                 $null = Invoke-TKRest -Method Post -Route wmi -Path "SMS_Scripts('$guid')/AdminService.UpdateScript" -Body @{
-                    ParamsDefinition = [string]$full.ParamsDefinition
+                    ParamsDefinition = $defB64
                     Script           = [Convert]::ToBase64String($bytes, [System.Base64FormattingOptions]::InsertLineBreaks)
                     ScriptDescription= $item.Description
                     ScriptName       = $name

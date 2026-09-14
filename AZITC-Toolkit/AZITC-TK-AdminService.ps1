@@ -567,6 +567,7 @@ function ConvertFrom-TKEnvelope {
         Truncated = $envelope.Truncated
         AppError  = (& $get $envelope 'AppError')
         Error     = (& $get $envelope 'Error')
+        ScriptExit = (& $get $envelope 'ScriptExit')
         Items     = @(& $get $payload 'Items')
         Apps      = @(& $get $payload 'Apps')
         Users     = (& $get $payload 'Users')
@@ -576,6 +577,41 @@ function ConvertFrom-TKEnvelope {
 }
 
 # --- Script registration ------------------------------------------------------
+
+function New-TKScriptParameterXml {
+    <#
+    .SYNOPSIS
+        The two XML forms of a parameter set. Definition = ParamsDefinition, what the validator
+        reads (XPath in smssqlclr.dll; stored base64 by the caller). List = ParameterlistXML,
+        the console's stored list, where ParameterType carries IsRequired.
+    #>
+    [CmdletBinding()]
+    param([hashtable[]]$Parameters = @())
+    $groupGuid = [guid]::NewGuid().ToString().ToUpper()
+    $def = New-Object System.Text.StringBuilder
+    $lst = New-Object System.Text.StringBuilder
+    $null = $def.Append('<ScriptParameters>')
+    $null = $lst.Append('<ScriptParameters>')
+    foreach ($p in $Parameters) {
+        $pName = [string]$p.Name
+        $pType = 'System.String'; if ($p.ContainsKey('Type') -and $p.Type) { $pType = [string]$p.Type }
+        $pReq = 'false'; if ($p.ContainsKey('Required') -and $p.Required) { $pReq = 'true' }
+        $pDef = ''; if ($p.ContainsKey('Default') -and $null -ne $p.Default) { $pDef = [string]$p.Default }
+        $esc = [System.Security.SecurityElement]::Escape($pDef)
+        $null = $def.AppendFormat('<ScriptParameter Name="{0}" FriendlyName="{0}" Type="{1}" Description="" IsRequired="{2}" IsHidden="false" DefaultValue="{3}">', $pName, $pType, $pReq, $esc)
+        if ($p.ContainsKey('Values') -and @($p.Values).Count -gt 0) {
+            $null = $def.Append('<Values>')
+            foreach ($v in @($p.Values)) { $null = $def.AppendFormat('<Value>{0}</Value>', [System.Security.SecurityElement]::Escape([string]$v)) }
+            $null = $def.Append('</Values>')
+        }
+        $null = $def.Append('<Validators /></ScriptParameter>')
+        $reqText = 'False'; if ($pReq -eq 'true') { $reqText = 'True' }
+        $null = $lst.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="{2}" ParameterValue="{3}"/>', $groupGuid, $pName, $reqText, $esc)
+    }
+    $null = $def.Append('</ScriptParameters>')
+    $null = $lst.Append('</ScriptParameters>')
+    return [pscustomobject]@{ Definition = $def.ToString(); List = $lst.ToString(); GroupGuid = $groupGuid }
+}
 
 function Register-TKScript {
     <#
@@ -608,31 +644,9 @@ function Register-TKScript {
         foreach ($e in $existing) { $null = Invoke-TKRest -Method Delete -Route wmi -Path "SMS_Scripts('$($e.ScriptGuid)')" }
     }
 
-    # ParamsDefinition: what the validator reads (XPath in smssqlclr.dll), stored base64.
-    # ParameterlistXML: the console's stored list (ParameterType carries IsRequired there).
-    $groupGuid = [guid]::NewGuid().ToString().ToUpper()
-    $def = New-Object System.Text.StringBuilder
-    $lst = New-Object System.Text.StringBuilder
-    $null = $def.Append('<ScriptParameters>')
-    $null = $lst.Append('<ScriptParameters>')
-    foreach ($p in $Parameters) {
-        $pName = [string]$p.Name
-        $pType = 'System.String'; if ($p.ContainsKey('Type') -and $p.Type) { $pType = [string]$p.Type }
-        $pReq = 'false'; if ($p.ContainsKey('Required') -and $p.Required) { $pReq = 'true' }
-        $pDef = ''; if ($p.ContainsKey('Default') -and $null -ne $p.Default) { $pDef = [string]$p.Default }
-        $esc = [System.Security.SecurityElement]::Escape($pDef)
-        $null = $def.AppendFormat('<ScriptParameter Name="{0}" FriendlyName="{0}" Type="{1}" Description="" IsRequired="{2}" IsHidden="false" DefaultValue="{3}">', $pName, $pType, $pReq, $esc)
-        if ($p.ContainsKey('Values') -and @($p.Values).Count -gt 0) {
-            $null = $def.Append('<Values>')
-            foreach ($v in @($p.Values)) { $null = $def.AppendFormat('<Value>{0}</Value>', [System.Security.SecurityElement]::Escape([string]$v)) }
-            $null = $def.Append('</Values>')
-        }
-        $null = $def.Append('<Validators /></ScriptParameter>')
-        $reqText = 'False'; if ($pReq -eq 'true') { $reqText = 'True' }
-        $null = $lst.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="{2}" ParameterValue="{3}"/>', $groupGuid, $pName, $reqText, $esc)
-    }
-    $null = $def.Append('</ScriptParameters>')
-    $null = $lst.Append('</ScriptParameters>')
+    $xmls = New-TKScriptParameterXml -Parameters $Parameters
+    $def = New-Object System.Text.StringBuilder; $null = $def.Append($xmls.Definition)
+    $lst = New-Object System.Text.StringBuilder; $null = $lst.Append($xmls.List)
 
     $bytes = [System.IO.File]::ReadAllBytes($File)
     $guid = [guid]::NewGuid().ToString().ToUpper()
@@ -752,7 +766,7 @@ function Get-TKLog {
         Truncated   = $envelope.Truncated
         Error       = $envelope.Error
         OperationId = $res.OperationId
-        ExitCode    = $res.ExitCode
+        ExitCode    = $(if ($null -ne $envelope.ScriptExit) { [int]$envelope.ScriptExit } else { $res.ExitCode })
     }
 }
 
@@ -809,7 +823,7 @@ function Invoke-TKSoftwareAction {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$DeviceName,
-        [Parameter(Mandatory = $true)][ValidateSet('Inspect', 'Uninstall', 'Repair')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('Inspect', 'Uninstall', 'Repair', 'RemoveEntry')][string]$Action,
         [Parameter(Mandatory = $true)][string]$Key,
         [string]$ExtraArgs = '',
         [int]$TimeoutMin = 15,
@@ -837,7 +851,9 @@ function Invoke-TKSoftwareAction {
         return [pscustomobject]@{ State = $res.State; ExitCode = $res.ExitCode; RawOutput = $res.Output; OperationId = $res.OperationId }
     }
     $parsed | Add-Member -NotePropertyName ScriptState -NotePropertyValue $res.State -Force
-    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $res.ExitCode -Force
+    # The Run Scripts host reports 0 whatever the script's exit says; the JSON carries ScriptExit.
+    $code = $res.ExitCode; if ($parsed.PSObject.Properties['ScriptExit']) { $code = [int]$parsed.ScriptExit }
+    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $code -Force
     $parsed | Add-Member -NotePropertyName OperationId -NotePropertyValue $res.OperationId -Force
     return $parsed
 }
@@ -894,7 +910,9 @@ function Invoke-TKCMAppAction {
     try { $parsed = $res.Output | ConvertFrom-Json } catch { }
     if ($null -eq $parsed) { return [pscustomobject]@{ State = $res.State; ExitCode = $res.ExitCode; RawOutput = $res.Output; OperationId = $res.OperationId } }
     $parsed | Add-Member -NotePropertyName ScriptState -NotePropertyValue $res.State -Force
-    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $res.ExitCode -Force
+    # The Run Scripts host reports 0 whatever the script's exit says; the JSON carries ScriptExit.
+    $code = $res.ExitCode; if ($parsed.PSObject.Properties['ScriptExit']) { $code = [int]$parsed.ScriptExit }
+    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $code -Force
     $parsed | Add-Member -NotePropertyName OperationId -NotePropertyValue $res.OperationId -Force
     return $parsed
 }
@@ -954,7 +972,9 @@ function Invoke-TKClientManage {
     try { $parsed = $res.Output | ConvertFrom-Json } catch { }
     if ($null -eq $parsed) { return [pscustomobject]@{ State = $res.State; ExitCode = $res.ExitCode; RawOutput = $res.Output; OperationId = $res.OperationId } }
     $parsed | Add-Member -NotePropertyName ScriptState -NotePropertyValue $res.State -Force
-    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $res.ExitCode -Force
+    # The Run Scripts host reports 0 whatever the script's exit says; the JSON carries ScriptExit.
+    $code = $res.ExitCode; if ($parsed.PSObject.Properties['ScriptExit']) { $code = [int]$parsed.ScriptExit }
+    $parsed | Add-Member -NotePropertyName ScriptExitCode -NotePropertyValue $code -Force
     $parsed | Add-Member -NotePropertyName OperationId -NotePropertyValue $res.OperationId -Force
     return $parsed
 }

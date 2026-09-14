@@ -73,6 +73,7 @@ $result = [ordered]@{
     Triggered = @()
     Failed    = @()
     Error     = ''
+    ScriptExit = 0
 }
 
 $exit = 0
@@ -93,5 +94,6 @@ if ($exit -ne 0) { $result.Error = 'One or more schedules could not be triggered
 
 $lvl = 1; if ($exit -ne 0) { $lvl = 3 }
 Write-TKLog -Message ('Client-Action {0}: triggered [{1}] failed [{2}]' -f $Action, ($result.Triggered -join '; '), ($result.Failed -join '; ')) -Component 'Client-Action' -Type $lvl
+$result.ScriptExit = $exit   # the host reports 0 whatever "exit" says; the JSON carries the code
 $result | ConvertTo-Json -Depth 3 -Compress | Write-Output
 exit $exit

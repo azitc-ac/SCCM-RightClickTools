@@ -70,10 +70,14 @@ $result = [ordered]@{
     Done     = @()
     Skipped  = @()
     Error    = ''
+    ScriptExit = 0
 }
 
 function Complete-Script {
     param([int]$Code)
+    # The Run Scripts host reports 0 whatever "exit" says (verified on the lab client), so the
+    # intended code travels inside the JSON as ScriptExit; only a thrown error makes the state fail.
+    $result.ScriptExit = $Code
     $lvl = 1; if ($Code -eq 1) { $lvl = 3 } elseif ($Code -eq 2) { $lvl = 2 }
     Write-TKLog -Message ('Client-Manage {0} {1} ''{2}'': before [{3}] after [{4}] done [{5}] skipped [{6}] error=''{7}'' -> script exit {8}' -f $Target, $Action, $Name, $result.Before, $result.After, ($result.Done -join '; '), ($result.Skipped -join '; '), $result.Error, $Code) -Component 'Client-Manage' -Type $lvl
     $result | ConvertTo-Json -Depth 4 -Compress | Write-Output

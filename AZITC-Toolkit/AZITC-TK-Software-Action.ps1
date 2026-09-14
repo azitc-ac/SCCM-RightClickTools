@@ -32,7 +32,12 @@
     Keep TimeoutMin below that (default 15, hard cap 25).
 
 .PARAMETER Action
-    Inspect | Uninstall | Repair
+    Inspect | Uninstall | Repair | RemoveEntry
+    RemoveEntry deletes an ORPHANED Add/Remove Programs key - one whose product Windows Installer
+    no longer knows, or whose uninstaller executable is gone - after saving the key's values to
+    the toolkit log folder. A key that still belongs to a real installation is refused; use
+    Uninstall for that. This is what unblocks a required deployment whose registry detection
+    keeps finding the leftover.
 
 .PARAMETER Key
     Registry key of the ARP entry as reported by AZITC-TK-Software-Get (field "K"), e.g.
@@ -59,7 +64,7 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Inspect', 'Uninstall', 'Repair')]
+    [ValidateSet('Inspect', 'Uninstall', 'Repair', 'RemoveEntry')]
     [string]$Action,
 
     [Parameter(Mandatory = $true)]
@@ -143,16 +148,23 @@ $result = [ordered]@{
     TimedOut           = $false
     StillPresent       = $null
     RebootRequired     = $false
+    Orphaned           = $null
+    OrphanReason       = ''
+    BackupFile         = ''
     RunningProcesses   = @()
     KilledProcesses    = @()
     ReEvaluateTriggered= $false
     LogFile            = ''
     LogTail            = @()
     Error              = ''
+    ScriptExit         = 0
 }
 
 function Complete-Script {
     param([int]$Code)
+    # The Run Scripts host reports 0 whatever "exit" says (verified on the lab client), so the
+    # intended code travels inside the JSON as ScriptExit; only a thrown error makes the state fail.
+    $result.ScriptExit = $Code
     $lvl = 1; if ($Code -eq 1) { $lvl = 3 } elseif ($Code -eq 2) { $lvl = 2 }
     Write-TKLog -Message ('Software-Action {0} ''{1}'' [{2}]: strategy={3} executed={4} exit={5} ({6}) stillPresent={7} reEvaluate={8} error=''{9}'' -> script exit {10}' -f $Action, $result.Name, $Key, $result.Strategy, $result.Executed, $result.ExitCode, $result.ExitMeaning, $result.StillPresent, $result.ReEvaluateTriggered, $result.Error, $Code) -Component 'Software-Action' -Type $lvl
     $result | ConvertTo-Json -Depth 4 -Compress | Write-Output
@@ -297,6 +309,33 @@ if ($result.IsMsi) {
 
 $result.RunningProcesses = @(Get-RunningFromLocation -Location $result.InstallLocation | Select-Object Id, Name, Path)
 
+# --- Orphan check -------------------------------------------------------------
+# MSI: ask Windows Installer itself (ProductState 5 = installed for the machine). Others: the
+# uninstaller named in the key has to exist. "Orphaned" means the key describes nothing that
+# can be uninstalled any more - only then may RemoveEntry delete it.
+function Test-MsiProductInstalled {
+    param([string]$ProductCode)
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $state = [int]$installer.GetType().InvokeMember('ProductState', 'GetProperty', $null, $installer, @($ProductCode))
+        return ($state -eq 5)
+    } catch { return $null }   # unknown - do not guess
+}
+if ($result.IsMsi -and $result.ProductCode) {
+    $installed = Test-MsiProductInstalled -ProductCode $result.ProductCode
+    if ($null -eq $installed) { $result.Orphaned = $false; $result.OrphanReason = 'Windows Installer could not be asked; treated as installed.' }
+    elseif ($installed) { $result.Orphaned = $false; $result.OrphanReason = 'Windows Installer knows the product (ProductState 5).' }
+    else { $result.Orphaned = $true; $result.OrphanReason = "Windows Installer does not know product $($result.ProductCode) - the key is a leftover." }
+} else {
+    $uninstExe = $exeInfo.Exe
+    $quiet = $null
+    if ($result.QuietUninstall) { $quiet = (Split-CommandLine -CommandLine $result.QuietUninstall).Exe }
+    $candidates = @($uninstExe, $quiet) | Where-Object { $_ }
+    if ($candidates.Count -eq 0) { $result.Orphaned = $true; $result.OrphanReason = 'No UninstallString at all.' }
+    elseif ($candidates | Where-Object { $_ -match '(?i)^msiexec(\.exe)?$' -or (Test-Path -LiteralPath $_) }) { $result.Orphaned = $false; $result.OrphanReason = 'The uninstaller executable exists.' }
+    else { $result.Orphaned = $true; $result.OrphanReason = "Uninstaller not found: $($candidates -join ' | ')" }
+}
+
 # --- Build command ----------------------------------------------------------
 
 $cmdExe  = ''
@@ -366,6 +405,41 @@ switch ($Action) {
         else {
             $result.Strategy = 'Unknown'
         }
+    }
+
+    'RemoveEntry' {
+        $result.Strategy = 'RemoveEntry'
+        if ($result.Scope -eq 'User') { $result.Error = 'Per-user entry - not handled from SYSTEM.'; Complete-Script -Code 2 }
+        if (-not $result.Orphaned) { $result.Error = "Refused: the entry is not orphaned ($($result.OrphanReason)). Use Uninstall."; Complete-Script -Code 2 }
+        # Save the key's values first, then delete the key.
+        try {
+            if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+            $backup = Join-Path $LogDir "$Stamp-$safeName-removed-key.json"
+            $values = [ordered]@{ Key = $Key; Host = $env:COMPUTERNAME; TimeUtc = $result.TimeUtc; Values = [ordered]@{} }
+            foreach ($prop in (Get-ItemProperty -LiteralPath $regPath).PSObject.Properties) {
+                if ($prop.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$') { $values.Values[$prop.Name] = [string]$prop.Value }
+            }
+            $values | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $backup -Encoding UTF8
+            $result.BackupFile = $backup
+            Remove-Item -LiteralPath $regPath -Recurse -Force -ErrorAction Stop
+        } catch {
+            $result.Error = "Removing the key failed: $($_.Exception.Message)"
+            $result.StillPresent = (Test-Path -LiteralPath $regPath)
+            Complete-Script -Code 1
+        }
+        $result.Executed = $true
+        $result.ExitCode = 0
+        $result.ExitMeaning = 'Orphaned entry removed'
+        $result.StillPresent = (Test-Path -LiteralPath $regPath)
+        if ($ReEvaluate -eq 1) {
+            try {
+                Invoke-CimMethod -Namespace 'root\ccm' -ClassName 'SMS_Client' -MethodName 'TriggerSchedule' `
+                    -Arguments @{ sScheduleID = '{00000000-0000-0000-0000-000000000121}' } -ErrorAction Stop | Out-Null
+                $result.ReEvaluateTriggered = $true
+            } catch { $result.Error = "Entry removed, but ReEvaluate trigger failed: $($_.Exception.Message)" }
+        }
+        if ($result.StillPresent) { $result.Error = 'The key still exists after the delete.'; Complete-Script -Code 1 }
+        Complete-Script -Code 0
     }
 
     'Inspect' {
@@ -447,6 +521,7 @@ if ($Action -eq 'Uninstall' -and $success -and $ReEvaluate -eq 1) {
 
 if ($Action -eq 'Uninstall' -and $success -and $result.StillPresent -and -not $result.RebootRequired) {
     $result.Error = 'Installer reported success but the ARP entry still exists.'
+    if ($result.Orphaned) { $result.Error += " It is orphaned ($($result.OrphanReason)) - RemoveEntry deletes it." }
     Complete-Script -Code 1
 }
 

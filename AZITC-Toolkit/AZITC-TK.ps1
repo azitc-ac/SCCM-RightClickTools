@@ -204,7 +204,8 @@ $clientActionScript = {
     $res = Invoke-TKScript -ResourceId $ResourceId -Script $scr -Parameters @{ Action = $Action } -TimeoutSec 240
     $parsed = $null
     try { $parsed = $res.Output | ConvertFrom-Json } catch { }
-    [pscustomobject]@{ OperationId = $res.OperationId; State = $res.State; ExitCode = $res.ExitCode; Result = $parsed; Raw = $res.Output }
+    $code = $res.ExitCode; if ($parsed -and $parsed.PSObject.Properties['ScriptExit']) { $code = [int]$parsed.ScriptExit }
+    [pscustomobject]@{ OperationId = $res.OperationId; State = $res.State; ExitCode = $code; Result = $parsed; Raw = $res.Output }
 }
 
 # ============================================================================
@@ -289,6 +290,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
             <Button x:Name="BtnUninstall" Content="Uninstall" IsEnabled="False"/>
             <Button x:Name="BtnUninstallReEval" Content="Uninstall + re-evaluate" IsEnabled="False"/>
             <Button x:Name="BtnRepair" Content="Repair" IsEnabled="False"/>
+            <Button x:Name="BtnRemoveEntry" Content="Remove orphaned entry" IsEnabled="False" ToolTip="Deletes the Add/Remove Programs key of an entry whose product Windows Installer no longer knows or whose uninstaller is gone - the leftover that keeps a registry detection true. Refused for a real installation. The key's values are saved to the toolkit log folder first."/>
             <CheckBox x:Name="ChkKill" Content="Kill running processes first" VerticalAlignment="Center" Margin="6,0,12,0"/>
             <TextBlock Text="Extra args:" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <TextBox x:Name="ExtraArgs" MinWidth="160" VerticalContentAlignment="Center"/>
@@ -507,7 +509,7 @@ $script:Busy = $true
 $script:ServicesTable = $null
 $script:ProcessesTable = $null
 $script:CacheTable = $null
-$script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnLog, $ui.BtnLogList,
+$script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnRemoveEntry, $ui.BtnLog, $ui.BtnLogList,
     $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair,
     $ui.BtnClientRefresh, $ui.BtnSvcStart, $ui.BtnSvcStop, $ui.BtnSvcRestart, $ui.BtnProcKill, $ui.BtnCacheDelete, $ui.BtnCacheClear,
     $ui.BtnNotifyPolicy, $ui.BtnNotifyAppEval, $ui.BtnNotifySumEval, $ui.BtnNotifyHwInv, $ui.BtnNotifySwInv, $ui.BtnNotifyDdr, $ui.BtnNotifyCompliance,
@@ -540,7 +542,7 @@ function Update-SelectionButtons {
         $machine = ([string]$row.Row['Scope'] -eq 'Machine')
         if (-not $machine) { $tip = 'Per-user installation - cannot be handled from the SYSTEM context of a Run Script.' }
     }
-    foreach ($b in @($ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair)) {
+    foreach ($b in @($ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnRemoveEntry)) {
         $b.IsEnabled = $has -and $machine
         $b.ToolTip = $tip
     }
@@ -686,6 +688,7 @@ function Start-Action {
     $name = [string]$row.Row['Name']; $key = [string]$row.Row['Key']
     if ($Action -ne 'Inspect') {
         $q = "$Action '$name' on $($script:Device.Name)?"
+        if ($Action -eq 'RemoveEntry') { $q = "Remove the Add/Remove Programs entry '$name' on $($script:Device.Name)?`n`nOnly an orphaned entry is removed - one whose product Windows Installer no longer knows, or whose uninstaller is gone. A real installation is refused; use Uninstall for that. The key's values are saved to the toolkit log folder first." }
         if ($ReEvaluate) { $q += "`n`nThe application deployment evaluation cycle is triggered afterwards - a required deployment will put it back." }
         $answer = [System.Windows.MessageBox]::Show($window, $q, 'AZITC Toolkit', 'YesNo', 'Question')
         if ($answer -ne 'Yes') { return }
@@ -916,6 +919,7 @@ $ui.BtnInspect.Add_Click({ Start-Action -Action 'Inspect' -ReEvaluate $false })
 $ui.BtnUninstall.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $false })
 $ui.BtnUninstallReEval.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $true })
 $ui.BtnRepair.Add_Click({ Start-Action -Action 'Repair' -ReEvaluate $false })
+$ui.BtnRemoveEntry.Add_Click({ Start-Action -Action 'RemoveEntry' -ReEvaluate $true })
 $ui.BtnLog.Add_Click({ Start-Log -Mode 'Tail' })
 $ui.BtnLogList.Add_Click({ Start-Log -Mode 'List' })
 $ui.GridSoftware.Add_SelectionChanged({ Update-SelectionButtons })

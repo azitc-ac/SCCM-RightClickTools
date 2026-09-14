@@ -105,10 +105,14 @@ $result = [ordered]@{
     TimedOut      = $false
     DurationSec   = 0
     Error         = ''
+    ScriptExit    = 0
 }
 
 function Complete-Script {
     param([int]$Code)
+    # The Run Scripts host reports 0 whatever "exit" says (verified on the lab client), so the
+    # intended code travels inside the JSON as ScriptExit; only a thrown error makes the state fail.
+    $result.ScriptExit = $Code
     $lvl = 1; if ($Code -eq 1) { $lvl = 3 } elseif ($Code -eq 2) { $lvl = 2 }
     $afterText = ''; if ($result.After) { $afterText = '{0}/{1}' -f $result.After.InstallState, $result.After.EvaluationState }
     Write-TKLog -Message ('CMApp-Action {0} ''{1} {2}'' rev {3}: method={4} job={5} reached={6} timedOut={7} after={8} {9}s error=''{10}'' -> script exit {11}' -f $Action, $result.Name, $result.Version, $result.Revision, $result.MethodReturn, $result.JobId, $result.Reached, $result.TimedOut, $afterText, $result.DurationSec, $result.Error, $Code) -Component 'CMApp-Action' -Type $lvl

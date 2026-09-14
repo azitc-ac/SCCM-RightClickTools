@@ -124,6 +124,8 @@ function New-Envelope {
 
 function Complete-Script {
     param([string]$Json, [int]$Code)
+    # The host reports 0 whatever "exit" says; the envelope carries the code as ScriptExit.
+    if ($Code -ne 0) { $Json = $Json -replace '^\{', ('{"ScriptExit":' + $Code + ',') }
     Write-Output $Json
     exit $Code
 }

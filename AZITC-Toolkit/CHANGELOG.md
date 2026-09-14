@@ -1,5 +1,40 @@
 # Changelog - AZITC Toolkit
 
+## 2026-09-14 (afternoon) - orphaned entries, and the exit code that never arrived
+
+**Orphans.** The user asked what Uninstall does to a leftover Add/Remove Programs key - one whose
+product is gone but whose registry detection keeps a required deployment from installing again.
+Until now: an MSI leftover got `msiexec /x` -> 1605, "success" with the key still there, exit 1;
+an EXE leftover got "Executable not found", exit 2. Honest, but the block stayed.
+
+* `AZITC-TK-Software-Action` now decides **Orphaned** for every entry it inspects: MSI - Windows
+  Installer is asked (`WindowsInstaller.Installer.ProductState`, 5 = installed for the machine);
+  otherwise the uninstaller named in the key (UninstallString, QuietUninstallString) has to
+  exist. `OrphanReason` says which. The Uninstall path's "still exists" error points at
+  RemoveEntry when the entry is orphaned.
+* New action **`RemoveEntry`**: saves the key's values to `<toolkit log folder>\<stamp>-<name>-removed-key.json`,
+  deletes the key, optionally triggers the deployment evaluation (`ReEvaluate`). Refused for a
+  per-user entry and for anything not orphaned - "Use Uninstall". Tested on LAB01 with two planted
+  leftovers (EXE with a missing uninstaller, MSI with an unknown product code): both recognised,
+  both removed with a backup; the real 7-Zip entry refused. On CLIENT01 the validator accepted the
+  new value and Google Chrome (MSI, installed) was refused with the ProductState reason.
+* Window: **Remove orphaned entry** next to Repair, with the explanation in the confirmation;
+  Inspect shows Orphaned / OrphanReason in the result pane.
+* `Publish-AZITCTKScripts.ps1` compares the parameter *definition* (allowed values, types,
+  defaults, required) with the site's, not only the names, and pushes a changed one through
+  `UpdateScript` - same GUID, version + 1. That is what carried `RemoveEntry` into the site's
+  `ParamsDefinition`; without it the validator would have rejected the value. The XML builder
+  moved into `New-TKScriptParameterXml` so Register and Publish produce the same string.
+
+**Exit codes.** Verified on CLIENT01: a script that ends with `exit 2` is reported by the Run Scripts
+host as `ScriptExitCode 0`, `ScriptExecutionState 1`; the only non-zero ever seen came from a
+thrown error (Get v1). Scripts.log confirms it ("Non-zero exit code" appears only there). So the
+intended code now travels inside the JSON as **`ScriptExit`** (envelope top level for Log-Get),
+and the library's `ScriptExitCode` prefers it. Client-Manage refusing to stop CcmExec now reads
+`ScriptExitCode=2` where the status row still says 0.
+
+Site: Action v5, Log-Get v5, Client-Action v3, CMApp-Action v3, Client-Manage v3.
+
 ## 2026-09-14 - the provider is found, not typed; "HTTP 0" says why
 
 The first deployment attempt at a customer failed with `HTTP 0 on GET https://.../Script?$top=1`
