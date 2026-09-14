@@ -52,3 +52,7 @@ commit by the pre-commit hook in `.githooks` - `git config core.hooksPath .githo
 clone.
 
 Author: Alexander Zarenko IT Consulting (AZITC).
+
+## License
+
+MIT - see `LICENSE`.

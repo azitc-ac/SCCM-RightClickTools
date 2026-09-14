@@ -11,8 +11,11 @@ the handover log - dated, with what was actually run and measured.
 
 ## Rules
 
-- This repository is **private** at the moment, so real names may appear in docs. If it is
-  ever made public, scrub first (see the sibling repos for how that went).
+- This repository is **public**. No real host, domain, account, client or customer names in
+  code, docs or commit messages - the lab is `LAB01` / `cm01.lab.example` / site `L01`, the lab
+  device `CLIENT01`. Commits are made as `azitc-ac <alexander@zarenko.net>` (repo-local git
+  config); the history was rewritten once on 2026-09-14 to get the old identity and the real
+  names out.
 - Windows PowerShell 5.1 everywhere (`powershell.exe`); no PS7-only syntax. All `.ps1` files
   UTF-8 with BOM and CRLF - a normaliser plus parse check before every commit, not after.
 - Code, comments, console output in English; the conversation with the user in German.
