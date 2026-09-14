@@ -1,4 +1,4 @@
-# AZITC Toolkit (AZITC-TK)
+﻿# AZITC Toolkit (AZITC-TK)
 
 A right-click console extension for Configuration Manager that opens a tabbed window for the
 selected device. The first tab, **Software (ARP)**, lists the installed software of the device
@@ -91,10 +91,10 @@ Re-running both steps after an update is safe: unchanged scripts are left alone.
 ## Installing the console action
 
 ```powershell
-.Install-AZITCTKConsoleExtension.ps1          # as administrator, on the machine with the console
+.\Install-AZITCTKConsoleExtension.ps1          # as administrator, on the machine with the console
 ```
 
-Copies the window and the library to `<AdminConsole>xtensionsAZITC-Toolkit`, compiles the
+Copies the window, the library and VERSION to `<AdminConsole>\extensions\AZITC-Toolkit\`, compiles the
 launcher, writes `AZITC-TK.xml` for the Devices node and the collection member view. Restart
 the console. The hierarchy setting *Only allow console extensions that are approved for the
 hierarchy* has to be off, as for every file-based extension.
