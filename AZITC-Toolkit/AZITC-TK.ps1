@@ -334,6 +334,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                     <DataGridTextColumn Header="Install state" Binding="{Binding InstallState}" Width="100"/>
                     <DataGridTextColumn Header="Resolved" Binding="{Binding ResolvedState}" Width="90"/>
                     <DataGridTextColumn Header="Eval" Binding="{Binding EvaluationState}" Width="45"/>
+                    <DataGridTextColumn Header="Rev" Binding="{Binding Revision}" Width="45"/>
                     <DataGridTextColumn Header="Deadline (UTC)" Binding="{Binding Deadline}" Width="140"/>
                     <DataGridTextColumn Header="Allowed" Binding="{Binding AllowedActions}" Width="130"/>
                     <DataGridTextColumn Header="Superseded" Binding="{Binding Superseded}" Width="75"/>
@@ -638,11 +639,12 @@ function ConvertTo-SoftwareTables {
     foreach ($c in 'Name', 'ConsoleName', 'Version', 'InstallState', 'ResolvedState', 'Deadline', 'AllowedActions', 'Publisher', 'Id') { $null = $a2.Columns.Add($c, [string]) }
     $null = $a2.Columns.Add('Superseded', [bool]); $null = $a2.Columns.Add('Deployments', [int])
     $null = $a2.Columns.Add('EvaluationState', [int])
+    $null = $a2.Columns.Add('Revision', [int])
     foreach ($a in $apps) {
         $r = $a2.NewRow()
         $r['Name'] = [string]$a.N; $r['Version'] = [string]$a.SV; $r['InstallState'] = [string]$a.IS; $r['ResolvedState'] = [string]$a.RS
         $r['Deadline'] = [string]$a.DL; $r['AllowedActions'] = (@($a.AA) -join ', '); $r['Publisher'] = [string]$a.Pub; $r['Id'] = [string]$a.Id
-        $r['EvaluationState'] = [int]$a.ES
+        $r['EvaluationState'] = [int]$a.ES; $r['Revision'] = [int]$a.Rev
         $r['ConsoleName'] = [string]$a.ConsoleName; $r['Superseded'] = [bool]$a.Superseded; $r['Deployments'] = [int]$a.Deployments
         $a2.Rows.Add($r)
     }
