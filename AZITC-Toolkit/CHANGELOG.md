@@ -135,7 +135,9 @@ Test application, collection and source folder removed afterwards.
 -SmokeTroubleshoot 'Notepad++'` selects the row like a user and runs the button's handler; the pane
 text is printed when the window closes. 17 s, verdict in the status bar, no handler error. The
 console on the lab server had still been running 0.2.8 - `Install-AZITCTKConsoleExtension.ps1` is
-part of every deploy, not only `Publish`.
+part of every deploy, not only `Publish`. `update.ps1` (new) does the download for a machine without git -
+the AZITC-Toolkit folder of the repository's zip over this folder - and with `-Deploy` runs Publish and
+Install afterwards; the AppHelper's update.ps1 was the model.
 
 ### Open
 
