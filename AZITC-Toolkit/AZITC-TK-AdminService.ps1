@@ -1117,7 +1117,7 @@ function Format-TKTroubleshoot {
     $a = $Result.App
     $null = $sb.AppendLine(('{0} {1}  rev {2}  on {3}, read {4}' -f $a.Name, $a.Version, $a.Revision, $Result.Host, (& $t $Result.TimeUtc)))
     $null = $sb.AppendLine(('client state: {0} / wanted {1} / evaluation {2}{3}, applicability {4}, supersession {5}' -f $a.InstallState, $a.ResolvedState, $a.EvaluationState, $(if ([int64]$a.ErrorCode -ne 0) { ' error ' + $a.ErrorHex } else { '' }), $a.ApplicabilityState, $a.SupersessionState))
-    $null = $sb.AppendLine(('last evaluated {0}, last successful install {1}, deadline {2} - the attempts are listed per deployment type below' -f (& $t $a.LastEvalUtc), (& $t $a.LastInstallUtc), (& $t $a.DeadlineUtc)))
+    $null = $sb.AppendLine(('last evaluated {0}, deadline {1} - every install/uninstall run of the last {2} days is listed per deployment type below' -f (& $t $a.LastEvalUtc), (& $t $a.DeadlineUtc), $Result.Days))
     $null = $sb.AppendLine()
     $null = $sb.AppendLine('VERDICT')
     foreach ($v in $Result.Verdicts) {
