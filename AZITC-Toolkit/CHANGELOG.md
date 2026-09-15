@@ -141,6 +141,18 @@ Install afterwards; the AppHelper's update.ps1 was the model. Since 2026-09-16 t
 no parameters = update, publish, install, certificate check off; `-NoDeploy` and `-CertificateCheck`
 are the opt-outs.
 
+**Maintenance windows and the execution queue** (2026-09-16, early): the customer's 7-Zip and PDF24
+waited with state 3 for a 23:00 window and Refresh changed nothing. `root\ccm\ClientSDK:CCM_ServiceWindow`
+lists the upcoming occurrences resolved (ID, Type, StartTime, EndTime, Duration; the local clock with
+the +000 quirk; Duration 0 / 2038 is the placeholder); types 1 All deployments, 2 Programs, 3 Reboot,
+4 Software updates, 5 Task sequences, 6 Business hours (Software Center) - measured on CLIENT01, which
+only has type 6 (22:00-05:00, `No Restricting Service Windows exist` in ServiceWindowManager.log for
+Type:2 checks). `root\ccm\SoftMgmtAgent:CCM_ExecutionRequestEx` is ExecMgr's queue (State, RunningState,
+NextRetryTime, RetryCount, TaskPauseReason). The script lists both, the verdicts name the next window
+that gates applications (types 1 and 2), whether the DT's maximum run time fits into it, whether the
+deployment ignores windows, and the queue state. `InstallState = NotUpdated` (installed with an older
+revision, the client re-runs the install as an update) got its own verdict and grid wording.
+
 **Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
 LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself
 (one background job, 16 s on CLIENT01) and puts the files on top of the list, newest first; a listing

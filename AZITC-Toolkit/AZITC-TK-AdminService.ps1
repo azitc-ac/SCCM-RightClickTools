@@ -1096,6 +1096,8 @@ function Invoke-TKCMAppTroubleshoot {
         AppIntent       = @($p.AppIntent)
         Cycle           = $cycle
         Arp             = @($p.Arp)
+        Windows         = $(if ($p.PSObject.Properties['Windows']) { $p.Windows } else { $null })
+        Queue           = @($(if ($p.PSObject.Properties['Queue']) { $p.Queue } else { @() }))
         Verdicts        = @($p.Verdicts)
         Logs            = @($p.Logs)
         Days            = $p.Days
@@ -1174,6 +1176,19 @@ function Format-TKTroubleshoot {
         $null = $sb.AppendLine(('  application deployment evaluation: last {0}, schedule {1}' -f (& $t $c.AppDeploymentEvalLastUtc), $sched))
         $null = $sb.AppendLine(('  machine policy retrieval: last {0}' -f (& $t $c.MachinePolicyLastUtc)))
         if ($c.PSObject.Properties['LastAssignmentRequest']) { $null = $sb.AppendLine('  ' + ([string]$c.LastAssignmentRequest -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+    }
+    $w = $Result.Windows
+    if ($w) {
+        $null = $sb.AppendLine()
+        $null = $sb.AppendLine(('MAINTENANCE WINDOWS (device time, {0}, UTC{1}{2})' -f $w.TimeZone, $(if ([int]$w.UtcOffsetMinutes -ge 0) { '+' } else { '-' }), [math]::Abs([int]$w.UtcOffsetMinutes / 60)))
+        if (@($w.Windows).Count -eq 0) { $null = $sb.AppendLine('  none - deployments run as soon as they are due') }
+        foreach ($x in @($w.Windows)) { $null = $sb.AppendLine(('  {0}{1}  {2} - {3}  ({4} min){5}' -f $(if ($x.ActiveNow) { '* ' } else { '  ' }), $x.TypeName.PadRight(34), ([string]$x.StartLocal -replace 'T', ' '), ([string]$x.EndLocal -replace 'T', ' '), $x.Minutes, $(if ($x.Type -in 1, 2) { '' } else { '  [does not gate applications]' }))) }
+        if (@($w.LogLines).Count -gt 0) { $null = $sb.AppendLine('  ServiceWindowManager.log:'); foreach ($l in @($w.LogLines)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) } }
+    }
+    if (@($Result.Queue).Count -gt 0) {
+        $null = $sb.AppendLine()
+        $null = $sb.AppendLine('EXECUTION QUEUE (CCM_ExecutionRequestEx)')
+        foreach ($q in @($Result.Queue)) { $null = $sb.AppendLine(('  {0}{1}  received {2}{3}{4}{5}' -f $q.State, $(if ($q.RunningState) { '/' + $q.RunningState } else { '' }), (& $t $q.ReceivedUtc), $(if ($q.NextRetryUtc) { ', next retry ' + (& $t $q.NextRetryUtc) } else { '' }), $(if ([int]$q.RetryCount -gt 0) { ', retries ' + $q.RetryCount } else { '' }), $(if ($q.Reason) { ', ' + $q.Reason } else { '' }))) }
     }
     $null = $sb.AppendLine()
     $null = $sb.AppendLine('ADD/REMOVE PROGRAMS (entries matching the name)')

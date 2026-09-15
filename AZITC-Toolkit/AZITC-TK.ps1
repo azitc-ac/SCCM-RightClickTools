@@ -732,6 +732,7 @@ function Get-TKInstallText {
     switch -Regex ($State) {
         '^Installed$'    { return 'Installed' }
         '^NotInstalled$' { return 'Not installed' }
+        '^NotUpdated$'   { return 'Installed, older revision' }
         '^Error$'        { return 'Error' }
         '^\s*$'          { return 'Unknown' }
         default          { return $State }

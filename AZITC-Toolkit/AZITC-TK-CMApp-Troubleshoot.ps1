@@ -693,6 +693,65 @@ try {
     if ($lastAssign.Count -gt 0) { $cycle.LastAssignmentRequest = '{0} {1}' -f $lastAssign[0].Time.ToUniversalTime().ToString('s'), $lastAssign[0].Text }
 } catch { }
 
+# --- 6b. Maintenance windows and the execution queue: what the client is waiting for -----------
+
+# ServiceWindowType as the console names it. 6 is the "business hours" window Software Center
+# lets the user define; the client checks it for user-facing deployments.
+$swTypeNames = @{ 1 = 'All deployments'; 2 = 'Programs'; 3 = 'Reboot required'; 4 = 'Software updates'; 5 = 'Task sequences'; 6 = 'Business hours (Software Center)' }
+$windows = New-Object System.Collections.Generic.List[object]
+$nowLocal = Get-Date
+try {
+    # CCM_ServiceWindow in the ClientSDK lists the upcoming occurrences with start/end already
+    # resolved; the raw schedule tokens sit in ActualConfig. Times carry the local clock (see
+    # ToIsoLocalDigits); Duration 0 with a 2038 start is the "no window" placeholder.
+    foreach ($w in @(Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_ServiceWindow' -ErrorAction Stop)) {
+        if ([int]$w.Duration -le 0) { continue }
+        $start = [datetime]$w.StartTime; if ($start.Kind -eq 'Local') { $start = $start.ToUniversalTime() }   # back to the digits = device local time
+        $end = [datetime]$w.EndTime;     if ($end.Kind -eq 'Local')   { $end = $end.ToUniversalTime() }
+        if ($end -lt $nowLocal.AddHours(-1)) { continue }
+        $windows.Add([pscustomobject]@{
+            Id = [string]$w.ID; Type = [int]$w.Type; TypeName = $(if ($swTypeNames.ContainsKey([int]$w.Type)) { $swTypeNames[[int]$w.Type] } else { 'type ' + $w.Type })
+            StartLocal = $start.ToString('s'); EndLocal = $end.ToString('s'); Minutes = [int]([int]$w.Duration / 60)
+            ActiveNow = ($start -le $nowLocal -and $end -gt $nowLocal)
+        })
+    }
+} catch { $errors.Add("CCM_ServiceWindow: $($_.Exception.Message)") }
+$windows = @($windows | Sort-Object StartLocal)
+$windowInfo = [ordered]@{
+    DeviceTimeLocal = $nowLocal.ToString('s'); TimeZone = [TimeZoneInfo]::Local.Id; UtcOffsetMinutes = [int][TimeZoneInfo]::Local.GetUtcOffset($nowLocal).TotalMinutes
+    Windows = $windows
+    # windows that gate application deployments: "All deployments" and "Programs"
+    Restricting = @($windows | Where-Object { $_.Type -in 1, 2 })
+    ActiveNow = @($windows | Where-Object { $_.ActiveNow -and $_.Type -in 1, 2 })
+    Next = $null
+    LogLines = @()
+}
+$windowInfo.Next = @($windowInfo.Restricting | Where-Object { [datetime]$_.StartLocal -gt $nowLocal } | Select-Object -First 1)
+if ($windowInfo.Next.Count -gt 0) { $windowInfo.Next = $windowInfo.Next[0] } else { $windowInfo.Next = $null }
+try {
+    $logSw = Read-CmLog 'ServiceWindowManager.log'
+    $windowInfo.LogLines = @(Tail-Entries -Entries @($logSw | Where-Object { $_.Text -match 'OnIsServiceWindowAvailable|Biggest Active|can run|cannot run|Restricting|SERVICEWINDOWEVENT|Next Event' }) -Max $MaxLines)
+} catch { }
+
+# the execution queue: what ExecMgr holds for this application (install jobs waiting for
+# content, a window, a retry - or running)
+$queue = New-Object System.Collections.Generic.List[object]
+try {
+    $myIds = @()
+    foreach ($d in $dtList) { $myIds += ([string]$d.Id -split '/')[-1]; $ci = $synContent[[string]$d.Id + '/' + [int]$d.Revision]; if ($ci -and $ci.Id) { $myIds += [string]$ci.Id } }
+    foreach ($q in @(Get-CimInstance -Namespace 'root\ccm\SoftMgmtAgent' -ClassName 'CCM_ExecutionRequestEx' -ErrorAction Stop)) {
+        $progId = [string]$q.ProgramID; $cid = [string]$q.ContentID
+        $mine = ($appGuid -and $progId.ToLower().Contains($appGuid))
+        foreach ($id in $myIds) { if ($id -and ($progId -like "*$id*" -or $cid -like "*$id*")) { $mine = $true } }
+        if (-not $mine) { continue }
+        $queue.Add([pscustomobject]@{
+            RequestId = [string]$q.RequestID; ProgramId = $progId; ContentId = $cid; State = [string]$q.State; RunningState = [string]$q.RunningState
+            CompletionState = [string]$q.CompletionState; ReceivedUtc = (ToIsoLocalDigits $q.ReceivedTime); NextRetryUtc = (ToIsoLocalDigits $q.NextRetryTime)
+            RetryCount = [int]$q.RetryCount; RetryInterval = [int]$q.RetryInterval; ExitCode = [string]$q.ProgramExitCode; Reason = [string]$q.TaskPauseReason
+        })
+    }
+} catch { $errors.Add("CCM_ExecutionRequestEx: $($_.Exception.Message)") }
+
 # --- 7. Add/Remove Programs: what is really registered ---------------------------------------
 
 $arp = New-Object System.Collections.Generic.List[object]
@@ -758,6 +817,18 @@ if (-not $app) {
         $arpOlder = @(); $arpSame = @(); $arpUnknown = @()
         foreach ($a in $arp) { $v = & $verOf $a.DisplayVersion; if ($null -eq $v -or $null -eq $appVer) { $arpUnknown += $a } elseif ($v -lt $appVer) { $arpOlder += $a } else { $arpSame += $a } }
         if ($detErr) { Add-Verdict 'Fail' ('The detection of "' + $main.Name + '" rev ' + $main.Revision + ' does not produce a result on this device: ' + $dres + '. The client reports such an app as failed/unknown and never as installed.') 'Fix the detection method (a script must exit 0 and write to stdout only when installed; nothing on stderr).' }
+        elseif ($app.InstallState -eq 'NotUpdated') {
+            # installed, but with an older revision of the deployment type: the client re-runs
+            # the install with the new revision ("Update" in Software Center), for a required
+            # deployment on its own - in a maintenance window when one applies
+            $wt = ''
+            if ($windowInfo.Restricting.Count -gt 0 -and -not [bool](@($required | Select-Object -First 1).OverrideServiceWindows)) {
+                if ($windowInfo.ActiveNow.Count -gt 0) { $wt = ' A maintenance window is open now (' + $windowInfo.ActiveNow[0].TypeName + ' until ' + $windowInfo.ActiveNow[0].EndLocal.Replace('T', ' ') + ' device time), so the update is due right now.' }
+                elseif ($windowInfo.Next) { $wt = ' It waits for the next maintenance window: ' + $windowInfo.Next.TypeName + ' ' + $windowInfo.Next.StartLocal.Replace('T', ' ') + ' device time.' }
+            }
+            $qt = ''; $qOpen = @($queue | Where-Object { $_.State -notin 'Completed', 'Expired' }); if ($qOpen.Count -gt 0) { $qt = ' Execution queue: ' + $qOpen[-1].State + $(if ($qOpen[-1].RunningState) { '/' + $qOpen[-1].RunningState } else { '' }) + '.' }
+            Add-Verdict $(if ($required.Count -gt 0) { 'Warn' } else { 'Info' }) ('Installed (detection true: ' + $clauseText + '), but with an older revision of the deployment type; the client holds revision ' + $main.Revision + ' now and will run the install again with it - an update, not a repair.' + $(if ($required.Count -gt 0) { ' The deployment is required, so this happens on its own.' } else { ' The deployment is available only; Software Center offers it as Update.' }) + $wt + $qt) 'Wait for the update run; the attempt then appears in the list below with the new revision. Install in this window runs it right away.'
+        }
         elseif ($detTrue -and -not $isInstalled) { Add-Verdict 'Warn' ('Evaluated now, the detection says DISCOVERED, while the client''s last evaluation (' + $appInfo.LastEvalUtc + ' UTC) recorded ' + $app.InstallState + '. The device changed since, or the client has not re-evaluated.') 'Run "Policy + evaluate" - the state should turn to Installed.' }
         elseif ($detTrue -and $isInstalled -and $wantInstalled) {
             # the classic false positive: detection true, ARP tells another story
@@ -779,6 +850,21 @@ if (-not $app) {
             $attemptIsCurrent = ($lastAttempt -and [int]$lastAttempt.Revision -eq [int]$main.Revision)
             $ct = $main.Content
             $contentText = ''
+            # the execution queue and the maintenance windows, worded once for the verdicts below
+            $req = @($required | Select-Object -First 1)
+            $ignoresWindows = ($req.Count -gt 0 -and [bool]$req[0].OverrideServiceWindows)
+            $maxMin = $(if ($main.Install) { [int]$main.Install.MaxExecuteTimeMin } else { 0 })
+            $windowText = ''
+            if ($windowInfo.Restricting.Count -gt 0) {
+                if ($windowInfo.ActiveNow.Count -gt 0) { $windowText = ' A maintenance window is open right now (' + $windowInfo.ActiveNow[0].TypeName + ' until ' + $windowInfo.ActiveNow[0].EndLocal.Replace('T', ' ') + ' device time).' }
+                elseif ($windowInfo.Next) {
+                    $fits = ($maxMin -le 0 -or $windowInfo.Next.Minutes -ge $maxMin)
+                    $windowText = ' Next maintenance window: ' + $windowInfo.Next.TypeName + ' ' + $windowInfo.Next.StartLocal.Replace('T', ' ') + ' - ' + $windowInfo.Next.EndLocal.Replace('T', ' ') + ' device time (' + $windowInfo.Next.Minutes + ' min' + $(if ($fits) { '' } else { ' - SHORTER than the deployment type''s maximum run time of ' + $maxMin + ' min, the client will never start it there' }) + ').' + $(if ($ignoresWindows) { ' This deployment is set to ignore maintenance windows.' } else { '' })
+                }
+            } else { $windowText = ' No maintenance window applies to this device.' }
+            $queueText = ''
+            $qOpen = @($queue | Where-Object { $_.State -notin 'Completed', 'Expired' })
+            if ($qOpen.Count -gt 0) { $q0 = $qOpen[-1]; $queueText = ' Execution queue: state ' + $q0.State + $(if ($q0.RunningState) { '/' + $q0.RunningState } else { '' }) + ', received ' + $q0.ReceivedUtc + ' UTC' + $(if ($q0.NextRetryUtc) { ', next retry ' + $q0.NextRetryUtc + ' UTC' } else { '' }) + $(if ($q0.Reason) { ', reason ' + $q0.Reason } else { '' }) + '.' }
             if ($ct) { $contentText = ' Content ' + $ct.Id + ' v' + $ct.Version + $(if ($ct.InCache) { ' is in the cache (' + $ct.CacheFolder + ').' } else { ' is not in the cache.' }) + $(if ($ct.Signal) { ' Logs: ' + $ct.Signal + '.' } else { '' }) }
             # what the client is doing right now decides first; an old attempt explains nothing about a wait
             if ($es -in 5, 6, 7, 24, 25, 28 -or ($ct -and $ct.Signal -like 'no distribution point*')) {
@@ -786,18 +872,18 @@ if (-not $app) {
                 elseif ($ct -and $ct.Signal -like 'download error*') { Add-Verdict 'Fail' ('The content download fails: ' + $ct.Signal + '.' + $contentText) 'DataTransferService.log on the client names the URL and the HTTP status; 404 = content not on that DP, 401/403 = IIS or certificate, 0x80072EE2 = timeout.' }
                 else { Add-Verdict 'Warn' ('The client is waiting for content (state ' + $es + ').' + $contentText) 'CAS.log, ContentTransferManager.log, LocationServices.log and DataTransferService.log on the client (excerpts below); distribution status of the content on the site.' }
             }
-            elseif ($es -eq 8) { Add-Verdict 'Warn' 'The client is waiting for a maintenance window before it installs.' ('Check the collection''s maintenance windows and the deployment type''s maximum run time (' + $(if ($main.Install) { $main.Install.MaxExecuteTimeMin } else { '?' }) + ' min must fit into the window).') }
+            elseif ($es -eq 8) { Add-Verdict 'Warn' ('The client is waiting for a maintenance window before it installs.' + $windowText + $queueText) 'Nothing to do but wait - or set the deployment to ignore maintenance windows.' }
             elseif ($es -eq 9) { Add-Verdict 'Warn' 'The client is waiting for a pending reboot before it installs.' 'Client tab: pending reboot and its sources.' }
             elseif ($es -in 17, 18, 19) { Add-Verdict 'Warn' ('The client is waiting for a user session condition (state ' + $es + ').') '' }
             elseif ($es -in 10, 11, 12, 27) { Add-Verdict 'Info' ('The client is busy with this application right now (state ' + $es + ').') 'Wait, then Troubleshoot again.' }
             elseif ($es -eq 20) { Add-Verdict 'Warn' 'The client is waiting to try again after a failure (state 20).' 'The last attempt below says what failed.' }
             elseif ($lastAttempt -and $null -ne $lastAttempt.ExitCode -and ($lastAttempt.ExitMeaning -eq 'Success' -or $lastAttempt.ExitCode -eq 0) -and $lastAttempt.PostDetection -eq 'not discovered') {
                 $arpText = $(if ($arp.Count -gt 0) { 'Add/Remove Programs lists ' + (($arp | ForEach-Object { $_.DisplayName + ' ' + $_.DisplayVersion + $(if ($_.WindowsInstaller) { ' (MSI)' } else { ' (non-MSI)' }) }) -join ', ') + '.' } else { 'Add/Remove Programs has no matching entry at all.' })
-                $revNote = $(if (-not $attemptIsCurrent) { ' (that attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ', not tried yet)' } else { '' })
+                $revNote = $(if (-not $attemptIsCurrent) { ' (that attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ', not tried yet' + $(if ($windowInfo.Restricting.Count -gt 0 -and $windowInfo.ActiveNow.Count -eq 0 -and -not $ignoresWindows) { ' -' + $windowText } else { '' }) + ')' } else { '' })
                 Add-Verdict 'Fail' ('The installer ran with exit ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.Seconds + ' s, ' + $lastAttempt.StartUtc + ' UTC) and the detection afterwards found nothing - that is 0x87D00324' + $revNote + '. Evaluated now: ' + $clauseText + '. ' + $arpText) 'The package installs something the rule does not look for (other installer kind, other product code, other path or version). Align the detection with what the installer really writes; the PSADT log of that run shows what it did.'
             }
             elseif ($lastAttempt -and $null -ne $lastAttempt.ExitCode -and $lastAttempt.ExitMeaning -ne 'Success' -and $lastAttempt.ExitCode -ne 0) {
-                $revNote = $(if (-not $attemptIsCurrent) { ' That attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ' and has not tried it yet.' } else { '' })
+                $revNote = $(if (-not $attemptIsCurrent) { ' That attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ' and has not tried it yet.' + $(if ($windowInfo.Restricting.Count -gt 0 -and $windowInfo.ActiveNow.Count -eq 0 -and -not $ignoresWindows) { $windowText } else { '' }) } else { '' })
                 Add-Verdict 'Fail' ('The last install attempt (' + $lastAttempt.StartUtc + ' UTC, rev ' + $lastAttempt.Revision + ') ended with exit code ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.ExitMeaning + ') after ' + $lastAttempt.Seconds + ' s. Detection is false, so the client will try again at the next application deployment evaluation.' + $revNote) ('Read the installer''s own log for that time (PSADT: Logs tab, List files on the PSADT folder). Exit codes the package treats as success must be in the deployment type''s success list (' + $(if ($main.Install) { $main.Install.SuccessExitCodes } else { '?' }) + ').')
             }
             elseif ($main.AttemptsTotal -eq 0) {
@@ -806,7 +892,8 @@ if (-not $app) {
                 else {
                     $dl = ''; if ($required.Count -gt 0) { $dl = $required[0].DeadlineUtc }
                     if ($dl -and ([datetime]$dl) -gt (Get-Date).ToUniversalTime()) { Add-Verdict 'OK' ($why + ' The deadline is ' + $dl + ' UTC, still ahead - nothing is due yet.') '' }
-                    else { Add-Verdict 'Warn' ($why + ' The deadline has passed. Last scheduled application deployment evaluation: ' + $cycle.AppDeploymentEvalLastUtc + ' UTC; last evaluation of this app: ' + $appInfo.LastEvalUtc + ' UTC; state ' + $es + '.' + $contentText) 'Trigger "Policy + evaluate" and watch AppIntentEval.log / AppEnforce.log; if nothing starts, ServiceWindowManager.log and the deployment''s schedule are next.' }
+                    elseif ($windowInfo.Restricting.Count -gt 0 -and $windowInfo.ActiveNow.Count -eq 0 -and -not $ignoresWindows) { Add-Verdict 'Warn' ('The deployment is due, the client is ready (state ' + $es + ', last evaluation of this app ' + $appInfo.LastEvalUtc + ' UTC) and waits for a maintenance window.' + $windowText + $queueText + $contentText) 'Nothing to do but wait; Refresh will not change anything before the window opens. To install now: set the deployment to ignore maintenance windows, or use Install in this window (it runs through the client as a user-initiated install).' }
+                    else { Add-Verdict 'Warn' ($why + ' The deadline has passed. Last scheduled application deployment evaluation: ' + $cycle.AppDeploymentEvalLastUtc + ' UTC; last evaluation of this app: ' + $appInfo.LastEvalUtc + ' UTC; state ' + $es + '.' + $windowText + $queueText + $contentText) 'Trigger "Policy + evaluate" and watch AppIntentEval.log / AppEnforce.log; if nothing starts, ServiceWindowManager.log is next.' }
                 }
             }
             else { Add-Verdict 'Warn' ('Detection is false and the last enforcement block (' + $lastAttempt.StartUtc + ' UTC) has no exit code - the run may still be in progress or was cut off.') 'AppEnforce.log around that time.' }
@@ -834,6 +921,8 @@ function New-Envelope {
         DeploymentTypes = [object[]]$DtList
         AppIntent   = [string[]]$appIntent
         Cycle       = [pscustomobject]$cycle
+        Windows     = [pscustomobject]$windowInfo
+        Queue       = [object[]]$queue.ToArray()
         Arp         = [object[]]$arp.ToArray()
         Verdicts    = [object[]]$verdicts.ToArray()
         Logs        = [string[]]@('AppDiscovery.log', 'AppEnforce.log', 'AppIntentEval.log', 'PolicyAgent.log', 'CAS.log', 'ServiceWindowManager.log')
