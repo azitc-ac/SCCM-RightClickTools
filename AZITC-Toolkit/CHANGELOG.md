@@ -137,7 +137,9 @@ text is printed when the window closes. 17 s, verdict in the status bar, no hand
 console on the lab server had still been running 0.2.8 - `Install-AZITCTKConsoleExtension.ps1` is
 part of every deploy, not only `Publish`. `update.ps1` (new) does the download for a machine without git -
 the AZITC-Toolkit folder of the repository's zip over this folder - and with `-Deploy` runs Publish and
-Install afterwards; the AppHelper's update.ps1 was the model.
+Install afterwards; the AppHelper's update.ps1 was the model. Since 2026-09-16 that is the default:
+no parameters = update, publish, install, certificate check off; `-NoDeploy` and `-CertificateCheck`
+are the opt-outs.
 
 **Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
 LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself

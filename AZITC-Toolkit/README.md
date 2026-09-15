@@ -62,8 +62,13 @@ gives 403 (RunScript) or 500 (InitiateClientOperationEx, "Script is not approved
 
 ## Deploying to a site
 
-Two halves, two scripts, both from a copy of this folder on any machine that reaches the
-SMS Provider (the admin workstation is the natural place):
+Updates: `update.ps1`, as administrator, no parameters - downloads the current folder from GitHub
+(no git needed), publishes the Run Scripts and installs the console extension. `-WhatIf` lists
+what would be replaced, `-NoDeploy` only replaces the files, `-CertificateCheck` verifies the
+AdminService certificate (off by default, it is usually self-signed).
+
+The two halves it runs, for a first installation or by hand - both from a copy of this folder
+on any machine that reaches the SMS Provider (the admin workstation is the natural place):
 
 ```powershell
 # 1. the eight Run Scripts into the Scripts node - creates, updates changed ones (version + 1),

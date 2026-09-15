@@ -5,39 +5,43 @@
 .DESCRIPTION
     "git pull" for a machine without git. Downloads the branch from GitHub as a zip (the
     repository is public, no credential needed), replaces the files of this folder with the
-    AZITC-Toolkit folder of the archive, then - with -Deploy - runs the two deploy steps:
+    AZITC-Toolkit folder of the archive, then runs the two deploy steps:
 
         Publish-AZITCTKScripts.ps1            the Run Scripts into the site (changed ones only)
         Install-AZITCTKConsoleExtension.ps1   the console extension on this machine (needs admin)
 
-    Scratch files (_*.ps1) and anything not in the repository stay as they are.
+    Run as administrator, without parameters. Scratch files (_*.ps1) and anything not in the
+    repository stay as they are.
 
-.PARAMETER Deploy
-    Run Publish and Install after the update. Without it only the files are replaced.
+.PARAMETER NoDeploy
+    Only replace the files; run Publish and Install yourself.
 
 .PARAMETER SmsProvider
     Handed to Publish. Optional - Publish finds the provider from the console's connection
     history or the local site installation.
 
-.PARAMETER SkipCertificateCheck
-    Handed to Publish - for a self-signed AdminService certificate.
+.PARAMETER CertificateCheck
+    Publish verifies the AdminService certificate. Off by default - the AdminService usually
+    runs with a self-signed certificate.
+
+.EXAMPLE
+    .\update.ps1
+    Update, publish the scripts, install the console extension. Run as administrator.
 
 .EXAMPLE
     .\update.ps1 -WhatIf
     Lists what would be replaced.
-
-.EXAMPLE
-    .\update.ps1 -Deploy -SkipCertificateCheck
-    Update, publish the scripts, install the console extension. Run as administrator.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [switch]$Deploy,
+    [switch]$NoDeploy,
     [string]$SmsProvider = '',
-    [switch]$SkipCertificateCheck,
+    [switch]$CertificateCheck,
     [string]$Branch = 'main',
     [string]$Token
 )
+$Deploy = -not $NoDeploy
+$SkipCertificateCheck = -not $CertificateCheck
 
 $ErrorActionPreference = 'Stop'
 $repoOwner = 'azitc-ac'
@@ -117,5 +121,5 @@ if ($Deploy -and -not $WhatIfPreference) {
     else { & (Join-Path $root 'Install-AZITCTKConsoleExtension.ps1') }
 }
 elseif (-not $WhatIfPreference) {
-    Write-Info 'Next: .\Publish-AZITCTKScripts.ps1 (site) and .\Install-AZITCTKConsoleExtension.ps1 (console, as admin) - or run update.ps1 -Deploy.'
+    Write-Info 'Next: .\Publish-AZITCTKScripts.ps1 (site) and .\Install-AZITCTKConsoleExtension.ps1 (console, as admin) - or run update.ps1 without -NoDeploy.'
 }
