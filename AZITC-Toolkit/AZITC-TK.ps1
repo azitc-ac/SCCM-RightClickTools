@@ -42,7 +42,8 @@ param(
     [switch]$SkipCertificateCheck,
     [switch]$SelfTest,
     [int]$AutoCloseSeconds = 0,         # smoke tests: close the window after n seconds
-    [string]$SmokeTroubleshoot = ''     # smoke tests: after the software list, press Troubleshoot on the application with this name
+    [string]$SmokeTroubleshoot = '',    # smoke tests: after the software list, press Troubleshoot on the application with this name
+    [switch]$SmokeLogs                  # smoke tests: after the software list, open the Logs tab (lists the PSADT folder)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -403,7 +404,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
         </Grid>
       </TabItem>
       <!-- ================= Logs ================= -->
-      <TabItem Header="Logs">
+      <TabItem Header="Logs" x:Name="TabLogs">
         <Grid Margin="6">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -551,8 +552,22 @@ $titleSite = ''
 if ($SiteCode) { $titleSite = " [$SiteCode]" }
 $window.Title = "AZITC Toolkit $toolVersion - $DeviceName$titleSite - $SmsProvider"
 $ui.HeaderDevice.Text = $DeviceName
-foreach ($n in 'AppEnforce.log', 'AppDiscovery.log', 'AppIntentEval.log', 'CAS.log', 'ContentTransferManager.log', 'DataTransferService.log', 'PolicyAgent.log', 'CcmExec.log', 'ClientIDManagerStartup.log', 'ccmnotificationagent.log', 'Scripts.log', 'UpdatesDeployment.log', 'WUAHandler.log', 'AZITC-Toolkit\AZITC-Toolkit.log', 'AZITC-Toolkit\*.log', 'C:\Windows\Logs\Software\*') { $null = $ui.LogName.Items.Add($n) }
+$script:LogNames = @('AppEnforce.log', 'AppDiscovery.log', 'AppIntentEval.log', 'DCMReporting.log', 'ServiceWindowManager.log', 'CAS.log', 'ContentTransferManager.log', 'LocationServices.log', 'DataTransferService.log', 'PolicyAgent.log', 'CcmExec.log', 'ClientIDManagerStartup.log', 'ccmnotificationagent.log', 'Scripts.log', 'UpdatesDeployment.log', 'WUAHandler.log', 'PSADT\*', 'AZITC-Toolkit\AZITC-Toolkit.log', 'AZITC-Toolkit\*.log', 'C:\Windows\Logs\Software\*')
+foreach ($n in $script:LogNames) { $null = $ui.LogName.Items.Add($n) }
 $ui.LogName.SelectedIndex = 0
+$script:PsadtListed = $false
+
+function Set-LogNameItems {
+    # Files of a listing on top (newest first), then the standard names - so a listing never
+    # takes the standard entries away, and the mask stays selectable.
+    param([string[]]$Files, [string]$Mask)
+    $keep = [string]$ui.LogName.Text
+    $ui.LogName.Items.Clear()
+    foreach ($f in $Files) { $null = $ui.LogName.Items.Add($f) }
+    if ($Mask -and $script:LogNames -notcontains $Mask) { $null = $ui.LogName.Items.Add($Mask) }
+    foreach ($n in $script:LogNames) { $null = $ui.LogName.Items.Add($n) }
+    $ui.LogName.Text = $keep
+}
 
 # ---------------------------------------------------------------------------
 # State
@@ -906,6 +921,7 @@ function Start-Refresh {
                 if ($rowView) { $ui.GridApps.SelectedItem = $rowView; Update-SelectionButtons; if ($ui.BtnAppTroubleshoot.IsEnabled) { Start-CMAppTroubleshoot } else { $script:LastHandlerError = 'Troubleshoot button not enabled' } }
                 else { $script:LastHandlerError = "no application named '$SmokeTroubleshoot'" }
             }
+            elseif ($SmokeLogs) { $ui.Tabs.SelectedItem = $ui.TabLogs }
             else { Start-ClientRefresh }
         }
     }
@@ -960,10 +976,7 @@ function Start-Log {
         if (@($v.Files).Count -gt 0) {
             # A listing: the files go into the box to pick from, newest first, the mask stays on top.
             $mask = [string]$ui.LogName.Text
-            $ui.LogName.Items.Clear()
-            $null = $ui.LogName.Items.Add($mask)
-            foreach ($f in $v.Files) { $null = $ui.LogName.Items.Add([string]$f.P) }
-            $ui.LogName.Text = $mask
+            Set-LogNameItems -Files @($v.Files | ForEach-Object { [string]$_.P }) -Mask $mask
             $ui.LogInfo.Text = "$($v.Path)  -  $(@($v.Files).Count) of $($v.Matched) files, newest first; pick one and press Get log"
             $ui.LogText.ScrollToHome()
         } else {
@@ -1188,6 +1201,22 @@ $ui.BtnUninstall.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $false
 $ui.BtnUninstallReEval.Add_Click({ Start-Action -Action 'Uninstall' -ReEvaluate $true })
 $ui.BtnRepair.Add_Click({ Start-Action -Action 'Repair' -ReEvaluate $false })
 $ui.BtnRemoveEntry.Add_Click({ Start-Action -Action 'RemoveEntry' -ReEvaluate $true })
+$ui.Tabs.Add_SelectionChanged({
+    param($s, $e)
+    if ($e.Source -ne $ui.Tabs) { return }
+    if ($ui.Tabs.SelectedItem -ne $ui.TabLogs -or $script:PsadtListed -or $script:Job -or -not $script:Device) { return }
+    $script:PsadtListed = $true
+    Set-Busy $true "Listing PSADT logs on $($script:Device.Name)..."
+    Invoke-TKJob -Name 'PSADT list' -Script $logScript -Arguments @($script:Device.Name, 'PSADT\*', 500, '', 'List') -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok -or $r.Value.Error) { $ui.LogInfo.Text = 'PSADT folder not listed: ' + $(if ($r.Ok) { $r.Value.Error } else { $r.Error }); return }
+        $files = @($r.Value.Files | ForEach-Object { [string]$_.P })
+        Set-LogNameItems -Files $files -Mask 'PSADT\*'
+        $ui.LogInfo.Text = "$($files.Count) PSADT log(s) in the list, newest first; pick one and press Get log"
+        $ui.StatusText.Text = "PSADT logs listed in $($r.Seconds) s"
+    }
+})
 $ui.BtnLog.Add_Click({ Start-Log -Mode 'Tail' })
 $ui.BtnLogList.Add_Click({ Start-Log -Mode 'List' })
 $ui.GridSoftware.Add_SelectionChanged({ Update-SelectionButtons })
@@ -1233,6 +1262,7 @@ $window.Add_Closed({
         $apps = 0; if ($script:AppsTable) { $apps = $script:AppsTable.Rows.Count }
         [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) sevenzip='$((($script:SoftwareTable.Select("Name LIKE '7-Zip%'") | ForEach-Object { $_["CMApp"] }) -join " ; "))' services=$(if ($script:ServicesTable) { $script:ServicesTable.Rows.Count } else { 0 }) processes=$(if ($script:ProcessesTable) { $script:ProcessesTable.Rows.Count } else { 0 }) handlerError='$($script:LastHandlerError)'")
         if ($SmokeTroubleshoot) { [Console]::Out.WriteLine('troubleshoot pane:'); [Console]::Out.WriteLine($ui.ActionResult.Text) }
+        if ($SmokeLogs) { [Console]::Out.WriteLine('log names: ' + $ui.LogName.Items.Count + ' - ' + $ui.LogInfo.Text); [Console]::Out.WriteLine((@($ui.LogName.Items | Select-Object -First 6) -join ' | ')) }
     }
     if ($script:Job) { try { $script:Job.PowerShell.Stop() } catch { } }
     try { $script:Runspace.Close() } catch { }

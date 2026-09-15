@@ -139,6 +139,11 @@ part of every deploy, not only `Publish`. `update.ps1` (new) does the download f
 the AZITC-Toolkit folder of the repository's zip over this folder - and with `-Deploy` runs Publish and
 Install afterwards; the AppHelper's update.ps1 was the model.
 
+**Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
+LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself
+(one background job, 16 s on CLIENT01) and puts the files on top of the list, newest first; a listing
+no longer removes the standard names. `-SmokeLogs` exercises it.
+
 ### Open
 
 * `ScriptType` 1/2 (VBScript/JScript) detection scripts are shown, not run. Setting types
