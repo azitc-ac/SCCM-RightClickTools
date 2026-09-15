@@ -30,6 +30,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# A token the console did not fill in arrives as the literal ##SUB:...## - the same as not given.
+foreach ($n in 'SmsProvider', 'SiteCode', 'Folder', 'Report') { if ((Get-Variable $n -ValueOnly) -like '##SUB:*') { Set-Variable $n -Value '' } }
 Add-Type -AssemblyName PresentationFramework
 function Show-Failure { param([string]$Text) [System.Windows.MessageBox]::Show($Text, 'AZITC Toolkit - open report', 'OK', 'Error') | Out-Null }
 
