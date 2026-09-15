@@ -41,7 +41,8 @@ param(
     [string]$SiteCode = '',
     [switch]$SkipCertificateCheck,
     [switch]$SelfTest,
-    [int]$AutoCloseSeconds = 0          # smoke tests: close the window after n seconds
+    [int]$AutoCloseSeconds = 0,         # smoke tests: close the window after n seconds
+    [string]$SmokeTroubleshoot = ''     # smoke tests: after the software list, press Troubleshoot on the application with this name
 )
 
 $ErrorActionPreference = 'Stop'
@@ -897,7 +898,16 @@ function Start-Refresh {
         $ui.StatusText.Text = "$($script:SoftwareTable.Rows.Count) entries, $($script:AppsTable.Rows.Count) ConfigMgr applications ($($r.Seconds) s)"
         $ui.StatusOperation.Text = "OperationId $($r.Value.OperationId)"
         $ui.HeaderInfo.Text = "ResourceId $($script:Device.ResourceId)  |  client $($script:Device.ClientVersion)  |  online: $($script:Device.Online)  |  read $(Get-Date -Format 'HH:mm:ss')"
-        if ($AutoCloseSeconds -gt 0 -and -not $script:SmokeClientDone) { $script:SmokeClientDone = $true; Start-ClientRefresh }
+        if ($AutoCloseSeconds -gt 0 -and -not $script:SmokeClientDone) {
+            $script:SmokeClientDone = $true
+            if ($SmokeTroubleshoot) {
+                # the real click path: select the row the way a user would, then the handler
+                $rowView = $script:AppsTable.DefaultView | Where-Object { [string]$_.Row['Name'] -like $SmokeTroubleshoot } | Select-Object -First 1
+                if ($rowView) { $ui.GridApps.SelectedItem = $rowView; Update-SelectionButtons; if ($ui.BtnAppTroubleshoot.IsEnabled) { Start-CMAppTroubleshoot } else { $script:LastHandlerError = 'Troubleshoot button not enabled' } }
+                else { $script:LastHandlerError = "no application named '$SmokeTroubleshoot'" }
+            }
+            else { Start-ClientRefresh }
+        }
     }
 }
 
@@ -1222,6 +1232,7 @@ $window.Add_Closed({
         $rows = 0; if ($script:SoftwareTable) { $rows = $script:SoftwareTable.Rows.Count }
         $apps = 0; if ($script:AppsTable) { $apps = $script:AppsTable.Rows.Count }
         [Console]::Out.WriteLine("autoclose: status='$($ui.StatusText.Text)' rows=$rows apps=$apps matched=$($script:SoftwareTable.Select("CMApp <> ''").Count) sevenzip='$((($script:SoftwareTable.Select("Name LIKE '7-Zip%'") | ForEach-Object { $_["CMApp"] }) -join " ; "))' services=$(if ($script:ServicesTable) { $script:ServicesTable.Rows.Count } else { 0 }) processes=$(if ($script:ProcessesTable) { $script:ProcessesTable.Rows.Count } else { 0 }) handlerError='$($script:LastHandlerError)'")
+        if ($SmokeTroubleshoot) { [Console]::Out.WriteLine('troubleshoot pane:'); [Console]::Out.WriteLine($ui.ActionResult.Text) }
     }
     if ($script:Job) { try { $script:Job.PowerShell.Stop() } catch { } }
     try { $script:Runspace.Close() } catch { }

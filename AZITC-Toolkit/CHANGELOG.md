@@ -131,6 +131,12 @@ device only, `_testapp.ps1` scenarios), each state read back with the troublesho
 
 Test application, collection and source folder removed afterwards.
 
+**Tested through the window, not only through the library** (evening): `AZITC-TK.ps1 -AutoCloseSeconds 70
+-SmokeTroubleshoot 'Notepad++'` selects the row like a user and runs the button's handler; the pane
+text is printed when the window closes. 17 s, verdict in the status bar, no handler error. The
+console on the lab server had still been running 0.2.8 - `Install-AZITCTKConsoleExtension.ps1` is
+part of every deploy, not only `Publish`.
+
 ### Open
 
 * `ScriptType` 1/2 (VBScript/JScript) detection scripts are shown, not run. Setting types
