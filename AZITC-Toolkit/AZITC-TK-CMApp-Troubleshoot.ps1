@@ -98,6 +98,14 @@ function ToIsoLocalDigits {
         return [datetime]::SpecifyKind($d, 'Local').ToUniversalTime().ToString('s')
     } catch { return [string]$Value }
 }
+function ToIsoAssignment {
+    # CCM_ApplicationCIAssignment times come as "...+***": the digits are UTC when the
+    # deployment was made with UTC times (UseGMTTimes), the local clock otherwise (a deployment
+    # with "client local time": raw 20260915180100+*** for 18:01 local). CIM reads "+***" as UTC.
+    param($Assignment, $Value)
+    if ([bool]$Assignment.UseGMTTimes) { return (ToIso $Value) }
+    return (ToIsoLocalDigits $Value)
+}
 
 $errors = New-Object System.Collections.Generic.List[string]
 $since = (Get-Date).AddDays(-[math]::Abs($Days))
@@ -150,8 +158,8 @@ try {
                 AssignmentId           = [string]$_.AssignmentID
                 Purpose                = $(if ([string]$_.EnforcementDeadline) { 'Required' } else { 'Available' })
                 DesiredConfigType      = [int]$_.DesiredConfigType          # 1 install, 2 uninstall
-                StartUtc               = ToIso $_.StartTime
-                DeadlineUtc            = ToIso $_.EnforcementDeadline
+                StartUtc               = ToIsoAssignment $_ $_.StartTime
+                DeadlineUtc            = ToIsoAssignment $_ $_.EnforcementDeadline
                 PolicyRevision         = $ciVersion
                 OverrideServiceWindows = [bool]$_.OverrideServiceWindows
                 RebootOutsideWindows   = [bool]$_.RebootOutsideOfServiceWindows
@@ -169,7 +177,7 @@ try {
         try {
             Get-CimInstance -Namespace ('root\ccm\Policy\' + $ns.Name + '\ActualConfig') -ClassName 'CCM_ApplicationCIAssignment' -ErrorAction Stop | ForEach-Object {
                 if ($appGuid -and ([string]$_.AssignedCIs).ToLower().Contains($appGuid)) {
-                    $assignments.Add([pscustomobject]@{ Name = [string]$_.AssignmentName; AssignmentId = [string]$_.AssignmentID; Purpose = $(if ([string]$_.EnforcementDeadline) { 'Required (user)' } else { 'Available (user)' }); DesiredConfigType = [int]$_.DesiredConfigType; StartUtc = ToIso $_.StartTime; DeadlineUtc = ToIso $_.EnforcementDeadline; PolicyRevision = ''; OverrideServiceWindows = [bool]$_.OverrideServiceWindows; RebootOutsideWindows = $false; UserUIExperience = $true; NotifyUser = $true; SoftDeadline = $false })
+                    $assignments.Add([pscustomobject]@{ Name = [string]$_.AssignmentName; AssignmentId = [string]$_.AssignmentID; Purpose = $(if ([string]$_.EnforcementDeadline) { 'Required (user)' } else { 'Available (user)' }); DesiredConfigType = [int]$_.DesiredConfigType; StartUtc = ToIsoAssignment $_ $_.StartTime; DeadlineUtc = ToIsoAssignment $_ $_.EnforcementDeadline; PolicyRevision = ''; OverrideServiceWindows = [bool]$_.OverrideServiceWindows; RebootOutsideWindows = $false; UserUIExperience = $true; NotifyUser = $true; SoftDeadline = $false })
                 }
             }
         } catch { }
@@ -189,7 +197,7 @@ function Read-CmLog {
     if (Test-Path -LiteralPath $base) { $files += $base }
     $rx = New-Object System.Text.RegularExpressions.Regex('<!\[LOG\[(?<msg>.*?)\]LOG\]!><time="(?<time>[^"]+)"\s+date="(?<date>[^"]+)"', [System.Text.RegularExpressions.RegexOptions]::Singleline)
     foreach ($f in $files) {
-        try { $text = [System.IO.File]::ReadAllText($f) } catch { continue }
+        try { $fs = New-Object System.IO.FileStream($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite); $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true); $text = $sr.ReadToEnd(); $sr.Close(); $fs.Close() } catch { $errors.Add("read $f`: $($_.Exception.Message)"); continue }
         foreach ($m in $rx.Matches($text)) {
             $t = $null
             try { $t = [datetime]::ParseExact(($m.Groups['date'].Value + ' ' + $m.Groups['time'].Value.Substring(0, 12)), 'MM-dd-yyyy HH:mm:ss.fff', [cultureinfo]::InvariantCulture) } catch { continue }
@@ -205,12 +213,13 @@ function Tail-Entries {
     param($Entries, [int]$Max)
     $arr = @($Entries)
     if ($arr.Count -gt $Max) { $arr = @($arr | Select-Object -Last $Max) }
-    return @($arr | ForEach-Object { '{0}  {1}' -f $_.Time.ToUniversalTime().ToString('s'), ($_.Text -replace 'ScopeId_[0-9A-Fa-f-]+/', '') })
+    return @($arr | ForEach-Object { $x = ($_.Text -replace 'ScopeId_[0-9A-Fa-f-]+/', ''); if ($x.Length -gt 400) { $x = $x.Substring(0, 400) + '...' }; '{0}  {1}' -f $_.Time.ToUniversalTime().ToString('s'), $x })
 }
 
 $logDiscovery = Read-CmLog 'AppDiscovery.log'
 $logEnforce   = Read-CmLog 'AppEnforce.log'
 $logIntent    = Read-CmLog 'AppIntentEval.log'
+$logDcm       = Read-CmLog 'DCMReporting.log'   # requirement rules: "In policy:<DT>_<rev>_Requirements_PolicyDocument, rule:Rule_x status is:NotConformant"
 
 # --- 4. Detection clauses: parse and evaluate on this device --------------------------------
 
@@ -226,6 +235,24 @@ function Get-RegistryBaseKey {
     }
     $view = if ($Is64Bit) { [Microsoft.Win32.RegistryView]::Registry64 } else { [Microsoft.Win32.RegistryView]::Registry32 }
     return [Microsoft.Win32.RegistryKey]::OpenBaseKey($h, $view)
+}
+function Test-OtherRegistryView {
+    # The most common registry-detection mistake: the clause names one registry view, the
+    # installer wrote the other. Says so when the key (and value) exists over there.
+    param([string]$Hive, [string]$Key, [string]$ValueName, [bool]$Is64Bit)
+    try {
+        $other = Get-RegistryBaseKey -Hive $Hive -Is64Bit (-not $Is64Bit)
+        $k = $other.OpenSubKey($Key)
+        if (-not $k) { return '' }
+        $view = $(if ($Is64Bit) { '32-bit' } else { '64-bit' })
+        if ($ValueName) {
+            $v = $k.GetValue($ValueName, $null); $k.Close()
+            if ($null -ne $v) { return ' - but present in the ' + $view + ' view with value ''' + [string]$v + '''' }
+            return ' - the key exists in the ' + $view + ' view, without that value'
+        }
+        $k.Close()
+        return ' - but present in the ' + $view + ' view'
+    } catch { return '' }
 }
 function Expand-CmPath {
     # %ProgramFiles% in a 32-bit clause means the x86 folder; the client does the same.
@@ -299,6 +326,11 @@ function Read-CmSetting {
                 $s.Target = '{0}\{1} ({2})' -f $dir.TrimEnd('\'), [string]$Node.Filter, $(if ($is64) { '64-bit view' } else { '32-bit view' })
                 $files = @(Get-ChildItem -Path $dir -Filter ([string]$Node.Filter) -File -ErrorAction SilentlyContinue)
                 $s.Values['Count'] = $files.Count
+                if ($files.Count -eq 0) {
+                    # the other view's folder (Program Files vs Program Files (x86))
+                    $dir2 = Expand-CmPath -Path ([string]$Node.Path) -Is64Bit (-not $is64)
+                    if ($dir2 -ne $dir) { $f2 = @(Get-ChildItem -Path $dir2 -Filter ([string]$Node.Filter) -File -ErrorAction SilentlyContinue); if ($f2.Count -gt 0) { $s.Note = 'not here, but ' + $f2[0].FullName + ' exists (' + $(if ($is64) { '32-bit' } else { '64-bit' }) + ' view), version ' + $f2[0].VersionInfo.FileVersion } }
+                }
                 if ($files.Count -gt 0) {
                     $f = $files[0]; $s.Exists = $true
                     $s.Values['Version'] = [string]$f.VersionInfo.FileVersion
@@ -331,14 +363,20 @@ function Read-CmSetting {
                 $s.Note = $mi.State
             }
             'RegistryKey' {
+                # Is64Bit="true": the client reads the 64-bit view only. Is64Bit="false" ("32-bit
+                # application"): the client accepted the key in either view on the lab client
+                # (5.00.9141) - tested with the key in the 32-bit view only and in the 64-bit view
+                # only, discovered both times. Evaluated the same way here: 32-bit view first.
                 $is64 = ([string]$Node.GetAttribute('Is64Bit') -eq 'true')
                 $hive = [string]$Node.GetAttribute('Hive'); if (-not $hive) { $hive = [string]$Node.Hive }
                 $key = [string]$Node.Key
-                $s.Target = '{0}\{1} ({2})' -f $hive, $key, $(if ($is64) { '64-bit view' } else { '32-bit view' })
-                $base = Get-RegistryBaseKey -Hive $hive -Is64Bit $is64
-                $k = $base.OpenSubKey($key)
-                $s.Exists = ($null -ne $k); $s.Values['Count'] = $(if ($k) { 1 } else { 0 })
-                if ($k) { $k.Close() }
+                $s.Target = '{0}\{1} ({2})' -f $hive, $key, $(if ($is64) { '64-bit view' } else { '32-bit app: either view' })
+                $views = $(if ($is64) { @($true) } else { @($false, $true) })
+                foreach ($v64 in $views) {
+                    $k = (Get-RegistryBaseKey -Hive $hive -Is64Bit $v64).OpenSubKey($key)
+                    if ($k) { $s.Exists = $true; $s.Values['Count'] = 1; $k.Close(); if (-not $is64) { $s.Note = 'found in the ' + $(if ($v64) { '64-bit' } else { '32-bit' }) + ' view' }; break }
+                }
+                if (-not $s.Exists) { $s.Values['Count'] = 0; $s.Note = 'key missing' + $(if ($is64) { Test-OtherRegistryView -Hive $hive -Key $key -ValueName '' -Is64Bit $true } else { ' in both views' }) }
             }
             'SimpleSetting' {
                 $src = $Node.SelectSingleNode("*[local-name()='RegistryDiscoverySource']")
@@ -346,14 +384,21 @@ function Read-CmSetting {
                     $is64 = ([string]$src.GetAttribute('Is64Bit') -eq 'true')
                     $hive = [string]$src.GetAttribute('Hive'); $key = [string]$src.Key; $vname = [string]$src.ValueName
                     $s.Kind = 'RegistryValue'
-                    $s.Target = '{0}\{1} : {2} ({3})' -f $hive, $key, $vname, $(if ($is64) { '64-bit view' } else { '32-bit view' })
-                    $base = Get-RegistryBaseKey -Hive $hive -Is64Bit $is64
-                    $k = $base.OpenSubKey($key)
-                    if ($k) {
-                        $v = $k.GetValue($vname, $null)
-                        if ($null -ne $v) { $s.Exists = $true; $s.Values['Value'] = [string]$v; $s.Values['Count'] = 1 } else { $s.Values['Count'] = 0; $s.Note = 'key exists, value missing' }
-                        $k.Close()
-                    } else { $s.Values['Count'] = 0; $s.Note = 'key missing' }
+                    $s.Target = '{0}\{1} : {2} ({3})' -f $hive, $key, $vname, $(if ($is64) { '64-bit view' } else { '32-bit app: either view' })
+                    $views = $(if ($is64) { @($true) } else { @($false, $true) })
+                    $keySeen = $false
+                    foreach ($v64 in $views) {
+                        $k = (Get-RegistryBaseKey -Hive $hive -Is64Bit $v64).OpenSubKey($key)
+                        if (-not $k) { continue }
+                        $keySeen = $true
+                        $v = $k.GetValue($vname, $null); $k.Close()
+                        if ($null -ne $v) { $s.Exists = $true; $s.Values['Value'] = [string]$v; $s.Values['Count'] = 1; if (-not $is64) { $s.Note = 'found in the ' + $(if ($v64) { '64-bit' } else { '32-bit' }) + ' view' }; break }
+                    }
+                    if (-not $s.Exists) {
+                        $s.Values['Count'] = 0
+                        if ($keySeen) { $s.Note = 'key exists, value missing' + $(if ($is64) { Test-OtherRegistryView -Hive $hive -Key $key -ValueName $vname -Is64Bit $true } else { '' }) }
+                        else { $s.Note = 'key missing' + $(if ($is64) { Test-OtherRegistryView -Hive $hive -Key $key -ValueName $vname -Is64Bit $true } else { ' in both views' }) }
+                    }
                 } else {
                     $other = $Node.SelectSingleNode("*[contains(local-name(),'DiscoverySource')]")
                     $s.Kind = $(if ($other) { $other.LocalName } else { 'SimpleSetting' })
@@ -475,7 +520,17 @@ $dts = New-Object System.Collections.Generic.List[object]
 $dtList = @()
 if ($app) { $dtList = @($app.AppDTs) }
 $synName = @{}
-try { Get-CimInstance -Namespace 'root\ccm\CIModels' -ClassName 'CCM_AppDeliveryTypeSynclet' -ErrorAction Stop | ForEach-Object { $synName[$_.AppDeliveryTypeId + '/' + $_.Revision] = [string]$_.AppDeliveryTypeName } } catch { $errors.Add("CCM_AppDeliveryTypeSynclet: $($_.Exception.Message)") }
+$synContent = @{}
+try {
+    Get-CimInstance -Namespace 'root\ccm\CIModels' -ClassName 'CCM_AppDeliveryTypeSynclet' -ErrorAction Stop | ForEach-Object {
+        $synName[$_.AppDeliveryTypeId + '/' + $_.Revision] = [string]$_.AppDeliveryTypeName
+        # the install action's content id and version (embedded ContentInfo)
+        try { $ci = $_.InstallAction.Content; if ($ci -and $ci.ContentId) { $synContent[$_.AppDeliveryTypeId + '/' + $_.Revision] = [pscustomobject]@{ Id = [string]$ci.ContentId; Version = [string]$ci.ContentVersion } } } catch { }
+    }
+} catch { $errors.Add("CCM_AppDeliveryTypeSynclet: $($_.Exception.Message)") }
+$cacheItems = @()
+try { $cacheItems = @(Get-CimInstance -Namespace 'root\ccm\SoftMgmtAgent' -ClassName 'CacheInfoEx' -ErrorAction Stop) } catch { $errors.Add("CacheInfoEx: $($_.Exception.Message)") }
+$logCas = $null; $logCtm = $null; $logLs = $null; $logDts = $null   # read only when a DT has content
 $enforceStatus = @{}
 try { Get-CimInstance -Namespace 'root\ccm\CIModels' -ClassName 'CCM_AppEnforceStatus' -ErrorAction Stop | ForEach-Object { $enforceStatus[$_.AppDeliveryTypeId] = [pscustomobject]@{ Revision = [int]$_.Revision; ExecutionStatus = [string]$_.ExecutionStatus; ExitCode = [uint32]$_.ExitCode; ExitHex = ('0x{0:X8}' -f [uint32]$_.ExitCode) } } } catch { $errors.Add("CCM_AppEnforceStatus: $($_.Exception.Message)") }
 
@@ -528,6 +583,34 @@ foreach ($d in $dtList) {
     $entry.Detection = [pscustomobject]$det
     $entry.LastEnforce = $enforceStatus[$dtId]
 
+    # content: is it in the cache, and what do the download logs say about it
+    $content = $null
+    $ci = $synContent[$dtId + '/' + $rev]
+    if ($ci) {
+        $content = [ordered]@{ Id = $ci.Id; Version = $ci.Version; InCache = $false; CacheFolder = ''; CacheSizeMB = 0; Cas = @(); Ctm = @(); Ls = @(); Dts = @(); Signal = '' }
+        $hit = $cacheItems | Where-Object { $_.ContentId -eq $ci.Id } | Sort-Object { [int]$_.ContentVer } -Descending | Select-Object -First 1
+        if ($hit) { $content.InCache = ([string]$hit.ContentVer -eq $ci.Version); $content.CacheFolder = [string]$hit.Location; $content.CacheSizeMB = [math]::Round([double]$hit.ContentSize / 1024, 1); if (-not $content.InCache) { $content.Signal = 'cache holds version ' + $hit.ContentVer + ', policy wants ' + $ci.Version } }
+        if ($null -eq $logCas) { $logCas = Read-CmLog 'CAS.log'; $logCtm = Read-CmLog 'ContentTransferManager.log'; $logLs = Read-CmLog 'LocationServices.log'; $logDts = Read-CmLog 'DataTransferService.log' }
+        $cas = @($logCas | Where-Object { $_.Text -like ('*' + $ci.Id + '*') -and $_.Text -notmatch '^(Saved|Removed) Content ID Mapping|^Raising event' })
+        $jobs = @{}; foreach ($e in $cas) { if ($e.Text -match 'CTM job (\{[0-9A-Fa-f-]+\})') { $jobs[$Matches[1]] = $true } }
+        $ctm = @($logCtm | Where-Object { $t = $_.Text; ($jobs.Keys | Where-Object { $t.Contains($_) }).Count -gt 0 })
+        $lsReq = @{}; foreach ($e in $ctm) { if ($e.Text -match "LSRequest\('(\{[0-9A-Fa-f-]+\})'\)") { $lsReq[$Matches[1]] = $true } }
+        $corr = @{}
+        foreach ($e in $logLs) { if ($e.Text -like ('*' + $ci.Id + '*') -and $e.Text -match 'CorrelationID (\{[0-9A-Fa-f-]+\})') { $corr[$Matches[1]] = $true } }
+        $ls = @($logLs | Where-Object { $t = $_.Text; $t.Contains($ci.Id) -or ((@($lsReq.Keys) + @($corr.Keys)) | Where-Object { $t.Contains($_) }).Count -gt 0 })
+        $dtsJobs = @{}; foreach ($e in $ctm) { if ($e.Text -match 'DTSJob\((\{[0-9A-Fa-f-]+\})\)') { $dtsJobs[$Matches[1]] = $true } }
+        $dtsLines = @($logDts | Where-Object { $t = $_.Text; $t.Contains($ci.Id) -or (@($dtsJobs.Keys) | Where-Object { $t.Contains($_) }).Count -gt 0 })
+        $content.Cas = @(Tail-Entries -Entries $cas -Max $MaxLines); $content.Ctm = @(Tail-Entries -Entries $ctm -Max $MaxLines)
+        $content.Ls = @(Tail-Entries -Entries $ls -Max $MaxLines); $content.Dts = @(Tail-Entries -Entries $dtsLines -Max $MaxLines)
+        $lastLs = @($ls | Select-Object -Last 3 | ForEach-Object { $_.Text }) -join ' '
+        $lastCtm = @($ctm | Select-Object -Last 3 | ForEach-Object { $_.Text }) -join ' '
+        if ($lastLs -match 'empty distribution points list' -or $lastCtm -match 'Received empty location update') { $content.Signal = 'no distribution point offers this content to the device (empty location list)' }
+        elseif ($lastCtm -match 'CCM_DOWNLOADSTATUS_WAITING_CONTENTLOCATIONS') { $content.Signal = 'waiting for content locations' }
+        elseif ((($dtsLines | Select-Object -Last 3 | ForEach-Object { $_.Text }) -join ' ') -match 'HTTP\D*(\d{3})') { $content.Signal = 'download error, HTTP ' + $Matches[1] }
+        elseif ($cas.Count -gt 0 -and $cas[-1].Text -match 'failed|error') { $content.Signal = $cas[-1].Text.Substring(0, [Math]::Min(160, $cas[-1].Text.Length)) }
+    }
+    $entry.Content = $(if ($content) { [pscustomobject]$content } else { $null })
+
     # timeline from the logs, this DT and this revision only (the client keeps evaluating
     # older revisions too; they would quadruple the list and say nothing new)
     $otherRevs = 0
@@ -570,6 +653,19 @@ foreach ($d in $dtList) {
     $entry.Attempts = @($attempts | Select-Object -Last $MaxLines)
     $entry.AttemptsTotal = $attempts.Count
     $entry.IntentHistory = @(Tail-Entries -Entries @($logIntent | Where-Object { $_.Text -like "*$dtGuidPart*" -and $_.Text -notmatch '^No dependencies' }) -Max $MaxLines)
+    # requirement rules of this revision, last status per rule (DCMReporting.log names the
+    # policy document as the DT id with "_" for "-" and "/", then the revision)
+    $polPrefix = (($dtId -replace '[-/]', '_') + '_' + $rev + '_Requirements_PolicyDocument')
+    $reqs = @{}
+    foreach ($e in $logDcm) {
+        if ($e.Text -match '^In policy:(\S+?), rule:(\S+?) status is:(\w+)' -and $Matches[1] -eq $polPrefix) {
+            $ruleId = $Matches[2]; $status = $Matches[3]
+            if ($ruleId -notlike 'Rule_*') { continue }
+            $ruleId = $ruleId -replace '^Rule_([0-9a-fA-F]{8})_([0-9a-fA-F]{4})_([0-9a-fA-F]{4})_([0-9a-fA-F]{4})_([0-9a-fA-F]{12})$', 'Rule_$1-$2-$3-$4-$5'
+            $reqs[$ruleId] = [pscustomobject]@{ Rule = $ruleId; Status = $status; TimeUtc = $e.Time.ToUniversalTime().ToString('s') }
+        }
+    }
+    $entry.Requirements = @($reqs.Values | Sort-Object Rule)
     $dts.Add([pscustomobject]$entry)
 }
 
@@ -640,7 +736,12 @@ if (-not $app) {
 
     if ($assignments.Count -eq 0) { Add-Verdict 'Warn' 'No deployment for this application is in the client''s machine policy (CCM_ApplicationCIAssignment) - the app is known, but nothing targets it here.' 'If a deployment should target this device, check collection membership and policy retrieval.' }
     if ($app.SupersessionState -eq 'Superseded') { Add-Verdict 'Info' 'This application is superseded by a newer one; the client treats it as not applicable and will neither install nor evaluate it on its own. Look at the superseding application instead.' '' }
-    elseif ($app.ApplicabilityState -ne 'Applicable') { Add-Verdict 'Fail' ('The application is ' + $app.ApplicabilityState + ' on this device: a requirement rule of every deployment type failed. The client does not install what does not apply.') 'Check the deployment types'' requirement rules against this device (OS, architecture, disk, custom conditions); AppDiscovery.log and AppIntentEval.log show the evaluation.' }
+    elseif ($app.ApplicabilityState -ne 'Applicable') {
+        $failedRules = @()
+        foreach ($d in $dts) { foreach ($rq in @($d.Requirements)) { if ($rq.Status -ne 'Conformant') { $failedRules += ('"' + $d.Name + '" ' + $rq.Rule + ' = ' + $rq.Status) } } }
+        $ruleText = $(if ($failedRules.Count -gt 0) { ' DCMReporting.log names the rule(s): ' + ($failedRules -join '; ') + ' - the rule text is in the deployment type''s Requirements tab (the window resolves the id when the site can be asked).' } else { ' DCMReporting.log has no requirement result for the current revision in the last ' + $Days + ' days.' })
+        Add-Verdict 'Fail' ('The application is ' + $app.ApplicabilityState + ' on this device: a requirement rule of every deployment type failed, so the deployment resolves to nothing and the client will neither install nor retry.' + $ruleText) 'Change the requirement or the device; then "Policy + evaluate".'
+    }
     if ($main -and $main.Applicability -ne 'Applicable' -and $app.ApplicabilityState -eq 'Applicable') { Add-Verdict 'Warn' ('Deployment type "' + $main.Name + '" is ' + $main.Applicability + '; another one applies instead.') '' }
 
     if ($main -and $main.Detection) {
@@ -670,32 +771,47 @@ if (-not $app) {
                 else { Add-Verdict 'OK' ('Detection is true and Add/Remove Programs agrees (' + (& $arpList $arp) + ').') '' }
             }
         }
+        elseif ($detFalse -and $isInstalled) {
+            Add-Verdict 'Warn' ('The client''s last evaluation (' + $appInfo.LastEvalUtc + ' UTC) recorded Installed, but evaluated now the detection is false: ' + $clauseText + '. The device changed since (removed by hand, key or file gone), or the client has not looked again.') 'Run "Policy + evaluate": the client re-evaluates, and a required deployment then installs again on its own.'
+        }
         elseif ($detFalse -and $wantInstalled) {
-            $last = $main.LastEnforce
             $lastAttempt = $null; if ($main.Attempts.Count -gt 0) { $lastAttempt = $main.Attempts[-1] }
-            if ($lastAttempt -and $null -ne $lastAttempt.ExitCode -and ($lastAttempt.ExitMeaning -eq 'Success' -or $lastAttempt.ExitCode -eq 0) -and $lastAttempt.PostDetection -eq 'not discovered') {
+            $attemptIsCurrent = ($lastAttempt -and [int]$lastAttempt.Revision -eq [int]$main.Revision)
+            $ct = $main.Content
+            $contentText = ''
+            if ($ct) { $contentText = ' Content ' + $ct.Id + ' v' + $ct.Version + $(if ($ct.InCache) { ' is in the cache (' + $ct.CacheFolder + ').' } else { ' is not in the cache.' }) + $(if ($ct.Signal) { ' Logs: ' + $ct.Signal + '.' } else { '' }) }
+            # what the client is doing right now decides first; an old attempt explains nothing about a wait
+            if ($es -in 5, 6, 7, 24, 25, 28 -or ($ct -and $ct.Signal -like 'no distribution point*')) {
+                if ($ct -and $ct.Signal -like 'no distribution point*') { Add-Verdict 'Fail' ('The client asked for the content and got an empty distribution point list - no DP in the device''s boundary group has ' + $ct.Id + ' version ' + $ct.Version + '. The client waits and asks again on its own schedule; nothing installs until the content is there.' + $contentText) 'Distribute the content to a DP the device''s boundary group can reach (or check boundary group membership); then "Policy + evaluate".' }
+                elseif ($ct -and $ct.Signal -like 'download error*') { Add-Verdict 'Fail' ('The content download fails: ' + $ct.Signal + '.' + $contentText) 'DataTransferService.log on the client names the URL and the HTTP status; 404 = content not on that DP, 401/403 = IIS or certificate, 0x80072EE2 = timeout.' }
+                else { Add-Verdict 'Warn' ('The client is waiting for content (state ' + $es + ').' + $contentText) 'CAS.log, ContentTransferManager.log, LocationServices.log and DataTransferService.log on the client (excerpts below); distribution status of the content on the site.' }
+            }
+            elseif ($es -eq 8) { Add-Verdict 'Warn' 'The client is waiting for a maintenance window before it installs.' ('Check the collection''s maintenance windows and the deployment type''s maximum run time (' + $(if ($main.Install) { $main.Install.MaxExecuteTimeMin } else { '?' }) + ' min must fit into the window).') }
+            elseif ($es -eq 9) { Add-Verdict 'Warn' 'The client is waiting for a pending reboot before it installs.' 'Client tab: pending reboot and its sources.' }
+            elseif ($es -in 17, 18, 19) { Add-Verdict 'Warn' ('The client is waiting for a user session condition (state ' + $es + ').') '' }
+            elseif ($es -in 10, 11, 12, 27) { Add-Verdict 'Info' ('The client is busy with this application right now (state ' + $es + ').') 'Wait, then Troubleshoot again.' }
+            elseif ($es -eq 20) { Add-Verdict 'Warn' 'The client is waiting to try again after a failure (state 20).' 'The last attempt below says what failed.' }
+            elseif ($lastAttempt -and $null -ne $lastAttempt.ExitCode -and ($lastAttempt.ExitMeaning -eq 'Success' -or $lastAttempt.ExitCode -eq 0) -and $lastAttempt.PostDetection -eq 'not discovered') {
                 $arpText = $(if ($arp.Count -gt 0) { 'Add/Remove Programs lists ' + (($arp | ForEach-Object { $_.DisplayName + ' ' + $_.DisplayVersion + $(if ($_.WindowsInstaller) { ' (MSI)' } else { ' (non-MSI)' }) }) -join ', ') + '.' } else { 'Add/Remove Programs has no matching entry at all.' })
-                Add-Verdict 'Fail' ('The installer ran with exit ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.Seconds + ' s, ' + $lastAttempt.StartUtc + ' UTC) and the detection afterwards found nothing - that is 0x87D00324. Evaluated now: ' + $clauseText + '. ' + $arpText) 'The package installs something the rule does not look for (other installer kind, other product code, other path or version). Align the detection with what the installer really writes; the PSADT log of that run shows what it did.'
+                $revNote = $(if (-not $attemptIsCurrent) { ' (that attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ', not tried yet)' } else { '' })
+                Add-Verdict 'Fail' ('The installer ran with exit ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.Seconds + ' s, ' + $lastAttempt.StartUtc + ' UTC) and the detection afterwards found nothing - that is 0x87D00324' + $revNote + '. Evaluated now: ' + $clauseText + '. ' + $arpText) 'The package installs something the rule does not look for (other installer kind, other product code, other path or version). Align the detection with what the installer really writes; the PSADT log of that run shows what it did.'
             }
             elseif ($lastAttempt -and $null -ne $lastAttempt.ExitCode -and $lastAttempt.ExitMeaning -ne 'Success' -and $lastAttempt.ExitCode -ne 0) {
-                Add-Verdict 'Fail' ('The last install attempt (' + $lastAttempt.StartUtc + ' UTC, rev ' + $lastAttempt.Revision + ') ended with exit code ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.ExitMeaning + ') after ' + $lastAttempt.Seconds + ' s. Detection is false, so the client will try again at the next application deployment evaluation.') 'Read the installer''s own log for that time (PSADT: Logs tab, List files on the PSADT folder). Exit codes the package treats as success must be in the deployment type''s success list (' + $(if ($main.Install) { $main.Install.SuccessExitCodes } else { '?' }) + ').'
+                $revNote = $(if (-not $attemptIsCurrent) { ' That attempt ran revision ' + $lastAttempt.Revision + '; the client now holds revision ' + $main.Revision + ' and has not tried it yet.' } else { '' })
+                Add-Verdict 'Fail' ('The last install attempt (' + $lastAttempt.StartUtc + ' UTC, rev ' + $lastAttempt.Revision + ') ended with exit code ' + $lastAttempt.ExitCode + ' (' + $lastAttempt.ExitMeaning + ') after ' + $lastAttempt.Seconds + ' s. Detection is false, so the client will try again at the next application deployment evaluation.' + $revNote) ('Read the installer''s own log for that time (PSADT: Logs tab, List files on the PSADT folder). Exit codes the package treats as success must be in the deployment type''s success list (' + $(if ($main.Install) { $main.Install.SuccessExitCodes } else { '?' }) + ').')
             }
             elseif ($main.AttemptsTotal -eq 0) {
                 $why = 'No enforcement attempt for this deployment type appears in AppEnforce.log for the last ' + $Days + ' days.'
                 if ($required.Count -eq 0) { Add-Verdict 'Warn' ($why + ' The deployment is Available only - nobody has clicked Install in Software Center.') '' }
-                elseif ($es -eq 8) { Add-Verdict 'Warn' ($why + ' The client is waiting for a maintenance window.') 'Check the collection''s maintenance windows and the deployment type''s maximum run time (' + $(if ($main.Install) { $main.Install.MaxExecuteTimeMin } else { '?' }) + ' min must fit into the window).' }
-                elseif ($es -in 5, 6, 7, 24, 25, 28) { Add-Verdict 'Warn' ($why + ' The client is waiting for content (state ' + $es + ').') 'CAS.log, ContentTransferManager.log and DataTransferService.log on the client; distribution status of the content on the site.' }
-                elseif ($es -eq 9) { Add-Verdict 'Warn' ($why + ' The client is waiting for a pending reboot first.') 'Client tab: pending reboot and its sources.' }
-                elseif ($es -in 17, 18, 19) { Add-Verdict 'Warn' ($why + ' The client is waiting for a user session condition (state ' + $es + ').') '' }
                 else {
                     $dl = ''; if ($required.Count -gt 0) { $dl = $required[0].DeadlineUtc }
                     if ($dl -and ([datetime]$dl) -gt (Get-Date).ToUniversalTime()) { Add-Verdict 'OK' ($why + ' The deadline is ' + $dl + ' UTC, still ahead - nothing is due yet.') '' }
-                    else { Add-Verdict 'Warn' ($why + ' The deadline has passed. Last application deployment evaluation: ' + $cycle.AppDeploymentEvalLastUtc + ' UTC; last evaluation of this app: ' + $appInfo.LastEvalUtc + ' UTC; state ' + $es + '.') 'Trigger "Policy + evaluate" and watch AppIntentEval.log / AppEnforce.log; if nothing starts, ServiceWindowManager.log and the deployment''s schedule are next.' }
+                    else { Add-Verdict 'Warn' ($why + ' The deadline has passed. Last scheduled application deployment evaluation: ' + $cycle.AppDeploymentEvalLastUtc + ' UTC; last evaluation of this app: ' + $appInfo.LastEvalUtc + ' UTC; state ' + $es + '.' + $contentText) 'Trigger "Policy + evaluate" and watch AppIntentEval.log / AppEnforce.log; if nothing starts, ServiceWindowManager.log and the deployment''s schedule are next.' }
                 }
             }
             else { Add-Verdict 'Warn' ('Detection is false and the last enforcement block (' + $lastAttempt.StartUtc + ' UTC) has no exit code - the run may still be in progress or was cut off.') 'AppEnforce.log around that time.' }
         }
-        elseif ($detFalse -and -not $wantInstalled) { Add-Verdict 'OK' 'Detection is false and the deployment does not want the app installed (uninstall or not targeted) - consistent.' '' }
+        elseif ($detFalse -and -not $wantInstalled -and $app.ApplicabilityState -eq 'Applicable' -and $app.SupersessionState -ne 'Superseded') { Add-Verdict 'OK' 'Detection is false and the deployment does not want the app installed (uninstall or not targeted) - consistent.' '' }
         elseif ($detTrue -and -not $wantInstalled -and $isInstalled) {
             if ($app.ResolvedState -eq 'Uninstalled') { Add-Verdict 'Warn' 'The deployment wants the app removed, and the detection still finds it.' 'Uninstall attempts are in AppEnforce.log; the uninstall command of the deployment type must actually remove what the detection looks for.' }
         }
@@ -746,7 +862,7 @@ $out = New-Envelope -DtList $dtOut -Truncated @()
 $shrink = 1
 while ($out.Length -gt $MaxOutputChars -and $shrink -lt 6) {
     $keep = [int][math]::Max(3, $MaxLines / [math]::Pow(2, $shrink))
-    $dtOut = @($dtOut | ForEach-Object { $c = $_ | Select-Object *; $c.DiscoveryHistory = @($c.DiscoveryHistory | Select-Object -Last $keep); $c.IntentHistory = @($c.IntentHistory | Select-Object -Last $keep); $c.Attempts = @($c.Attempts | Select-Object -Last $keep); $c })
+    $dtOut = @($dtOut | ForEach-Object { $c = $_ | Select-Object *; $c.DiscoveryHistory = @($c.DiscoveryHistory | Select-Object -Last $keep); $c.IntentHistory = @($c.IntentHistory | Select-Object -Last $keep); $c.Attempts = @($c.Attempts | Select-Object -Last $keep); if ($c.Content) { $cc = $c.Content | Select-Object *; foreach ($k in "Cas", "Ctm", "Ls", "Dts") { $cc.$k = @($cc.$k | Select-Object -Last $keep) }; $c.Content = $cc }; $c })
     if ($trunc -notcontains 'History') { $trunc.Add('History') }
     $out = New-Envelope -DtList $dtOut -Truncated $trunc.ToArray()
     $shrink++

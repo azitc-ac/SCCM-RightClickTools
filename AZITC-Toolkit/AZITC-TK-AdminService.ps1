@@ -1017,6 +1017,35 @@ function ConvertFrom-TKScheduleString {
     } catch { return $Token }
 }
 
+function Get-TKDeploymentTypeRequirementNames {
+    <#
+    .SYNOPSIS
+        Rule id -> display name of a deployment type's requirement rules, read from the site's
+        SMS_DeploymentType.SDMPackageXML (lazy: GET by CI_ID). The client logs only the rule id
+        ("Rule_28517d35-…" in DCMReporting.log); the digest carries the text the console shows,
+        "Free Disk Space of system drive Greater than 999999999 MB".
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$DtModelName, [int]$Revision = 0)
+    $names = @{}
+    try {
+        $filter = "ModelName eq '$DtModelName'" + $(if ($Revision -gt 0) { " and CIVersion eq $Revision" } else { ' and IsLatest eq true' })
+        $r = Invoke-TKRest -Route wmi -Path ("SMS_DeploymentType?`$filter=$filter&`$select=CI_ID")
+        $row = @($r.value)[0]
+        if (-not $row) { return $names }
+        $full = Invoke-TKRest -Route wmi -Path ("SMS_DeploymentType($($row.CI_ID))")
+        $x = @($full.value)[0]; if (-not $x) { $x = $full }
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.LoadXml([string]$x.SDMPackageXML)
+        foreach ($rule in $xml.SelectNodes("//*[local-name()='Requirements']/*[local-name()='Rule']")) {
+            $id = [string]$rule.GetAttribute('id')
+            $dn = $rule.SelectSingleNode("*[local-name()='Annotation']/*[local-name()='DisplayName']")
+            $names[$id] = $(if ($dn) { [string]$dn.GetAttribute('Text') } else { $id })
+        }
+    } catch { Write-Verbose "requirement names for $DtModelName`: $($_.Exception.Message)" }
+    return $names
+}
+
 function Invoke-TKCMAppTroubleshoot {
     <#
     .SYNOPSIS
@@ -1045,6 +1074,15 @@ function Invoke-TKCMAppTroubleshoot {
     $cycle = $p.Cycle
     if ($cycle -and $cycle.PSObject.Properties['AppDeploymentEvalSchedule'] -and $cycle.AppDeploymentEvalSchedule) {
         $cycle | Add-Member -NotePropertyName AppDeploymentEvalScheduleText -NotePropertyValue (ConvertFrom-TKScheduleString -Token ([string]$cycle.AppDeploymentEvalSchedule)) -Force
+    }
+    # the client logs requirement rules by id only; the site has the text
+    foreach ($d in @($p.DeploymentTypes)) {
+        if (-not $d.PSObject.Properties['Requirements'] -or @($d.Requirements).Count -eq 0) { continue }
+        $names = Get-TKDeploymentTypeRequirementNames -DtModelName ([string]$d.Id) -Revision ([int]$d.Revision)
+        foreach ($rq in @($d.Requirements)) {
+            $text = $(if ($names.ContainsKey([string]$rq.Rule)) { $names[[string]$rq.Rule] } else { '' })
+            $rq | Add-Member -NotePropertyName Text -NotePropertyValue $text -Force
+        }
     }
     return [pscustomobject]@{
         Host            = $envelope.Host
@@ -1099,8 +1137,22 @@ function Format-TKTroubleshoot {
             $null = $sb.AppendLine('    stdout: ' + $(if ($det.StdOut) { $det.StdOut } else { '(empty)' }))
             if ($det.StdErr) { $null = $sb.AppendLine('    stderr: ' + $det.StdErr) }
         }
+        if ($d.PSObject.Properties['Requirements'] -and @($d.Requirements).Count -gt 0) {
+            $null = $sb.AppendLine('  Requirement rules (DCMReporting.log, last result each):')
+            foreach ($rq in @($d.Requirements)) { $null = $sb.AppendLine(('    [{0}] {1}{2}  ({3})' -f $rq.Status, $(if ($rq.PSObject.Properties['Text'] -and $rq.Text) { $rq.Text } else { $rq.Rule }), $(if ($rq.PSObject.Properties['Text'] -and $rq.Text) { '  ' + $rq.Rule } else { '' }), (& $t $rq.TimeUtc))) }
+        }
         if ($d.Install) { $null = $sb.AppendLine(('  Install: {0}  [{1}, max {2} min, success codes {3}, reboot codes {4}]' -f $d.Install.CommandLine, $d.Install.Context, $d.Install.MaxExecuteTimeMin, $d.Install.SuccessExitCodes, $d.Install.RebootExitCodes)) }
         if ($d.LastEnforce) { $null = $sb.AppendLine(('  Last enforcement result kept by the client: {0}, exit {1} ({2}), rev {3}' -f $d.LastEnforce.ExecutionStatus, $d.LastEnforce.ExitCode, $d.LastEnforce.ExitHex, $d.LastEnforce.Revision)) }
+        if ($d.PSObject.Properties['Content'] -and $d.Content) {
+            $ct = $d.Content
+            $null = $sb.AppendLine(('  Content {0} v{1}: {2}{3}{4}' -f $ct.Id, $ct.Version, $(if ($ct.InCache) { 'in the cache, ' + $ct.CacheFolder + ', ' + $ct.CacheSizeMB + ' MB' } else { 'not in the cache' }), $(if ($ct.CacheFolder -and -not $ct.InCache) { ' (cache has another version in ' + $ct.CacheFolder + ')' } else { '' }), $(if ($ct.Signal) { ' - ' + $ct.Signal } else { '' })))
+            foreach ($pair in @(@('CAS.log', 'Cas'), @('ContentTransferManager.log', 'Ctm'), @('LocationServices.log', 'Ls'), @('DataTransferService.log', 'Dts'))) {
+                $lines = @($ct.($pair[1]))
+                if ($lines.Count -eq 0) { continue }
+                $null = $sb.AppendLine('    ' + $pair[0] + ':')
+                foreach ($l in $lines) { $null = $sb.AppendLine('      ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+            }
+        }
         $null = $sb.AppendLine(('  Enforcement attempts in the last {0} days: {1}' -f $Result.Days, $d.AttemptsTotal))
         foreach ($at in @($d.Attempts)) {
             $null = $sb.AppendLine(('    {0}  {1} rev {2}: exit {3}{4}, {5} s, detection before: {6}, after: {7}' -f (& $t $at.StartUtc), $at.Action, $at.Revision, $(if ($null -ne $at.ExitCode) { $at.ExitCode } else { '?' }), $(if ($at.ExitMeaning) { ' (' + $at.ExitMeaning + ')' } else { '' }), $at.Seconds, $(if ($at.PreDetection) { $at.PreDetection } else { '-' }), $(if ($at.PostDetection) { $at.PostDetection } else { '-' })))

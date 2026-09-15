@@ -83,13 +83,60 @@ same way (`ToIsoLocalDigits`).
   wrong detection is a case too -, result in the Action result pane, the top Fail/Warn verdict
   in the status bar. `Publish-AZITCTKScripts.ps1` knows the script.
 
+### Provoked failures (afternoon): a throwaway application on CLIENT01
+
+`AZITC-TK-Test` (script DT, `Install.ps1` writes `HKLM\SOFTWARE\AZITC\TK-Test\Version`,
+registry detection `Version >= 1.0.0`, required deployment to a collection with the lab
+device only, `_testapp.ps1` scenarios), each state read back with the troubleshoot script:
+
+* **Exit 1.** `AppEnforce.log`: `Process N terminated with exitcode: 1`, `Unmatched exit code
+  (1) is considered an execution failure`; `CCM_Application.ErrorCode` 0x00000001, state 4.
+  Verdict names the exit code, the meaning and the DT's success list (`0,1707`).
+* **Requirement not met** (free disk space > 999999999 MB). `ApplicabilityState =
+  NotApplicable`, `ResolvedState = None`, state 2 - the deployment resolves to nothing.
+  `DCMReporting.log`: `In policy:<DT with _ for - and />_<rev>_Requirements_PolicyDocument,
+  rule:Rule_28517d35_… status is:NotConformant`. The rule text is not on the client; the
+  library reads it from `SMS_DeploymentType.SDMPackageXML` (`<Requirements><Rule
+  id="Rule_28517d35-…"><Annotation><DisplayName Text="Free Disk Space of system drive Greater
+  than 999999999 MB"/>`) - `Get-TKDeploymentTypeRequirementNames`.
+* **Content gone from the DP** (cache emptied first). State 6, `ErrorCode` 0x87D01107.
+  `CAS.log`: `Submitted CTM job {…}`, `Location update from CTM for content …`;
+  `ContentTransferManager.log`: `entered phase CCM_DOWNLOADSTATUS_WAITING_CONTENTLOCATIONS`,
+  `Queued location request LSRequest('{…}')`, `CCTMJob::UpdateLocations - Received empty
+  location update`, `job suspended`; `LocationServices.log`: `LS Request CorrelationID {…} -
+  Calling back with empty distribution points list`. Nothing more is logged afterwards - the
+  client waits (`ContentLocationTimeoutInterval` 28800 s in the client config). The content id
+  comes from `CCM_AppDeliveryTypeSynclet.InstallAction.Content` (`ContentId`,
+  `ContentVersion`), the cache state from `root\ccm\SoftMgmtAgent:CacheInfoEx`.
+* **Installer exit 0, nothing written** (a broken here-string in the throwaway installer -
+  unplanned, and the most common real case): 0x87D00324 again, this time on a registry rule.
+* **`Is64Bit` on registry clauses, measured.** `Is64Bit="true"` (`RegistryPathRedirectionMode`
+  0): the client reads the 64-bit view only - key moved to the 32-bit view → `NOT discovered`
+  → reinstall. `Is64Bit="false"` (mode 1, what `New-CMDetectionClauseRegistryKeyValue` writes
+  without `-Is64Bit`, the console's "32-bit application on 64-bit systems"): the client found
+  the key with it in the 32-bit view only *and* with it in the 64-bit view only. The script
+  evaluates registry clauses the same way (64-bit strict; "32-bit app: either view", noting
+  which view supplied the value) and says when a strict 64-bit clause misses a key that
+  exists in the other view. File clauses stay strict per view, with a note when the file
+  exists in the other Program Files folder - not measured, the 7-Zip rule carries both
+  variants explicitly.
+* **Verdict order** now: content / maintenance window / reboot / user session / busy first
+  (what the client is doing now), then the last attempt (with a note when it ran an older
+  revision than the client now holds), then "no attempt" against the deadline. The client's
+  Installed against a false rule evaluated now is its own verdict (device changed since).
+* Log files are opened with `FileShare.ReadWrite` - `File.ReadAllText` fails on a log the
+  client is writing (`PolicyAgent.log` came back empty).
+* `CCM_ApplicationCIAssignment` times: `+***` with `UseGMTTimes=True` are UTC digits, with
+  `UseGMTTimes=False` (a deployment on "client local time") local digits - `ToIsoAssignment`.
+
+Test application, collection and source folder removed afterwards.
+
 ### Open
 
-* Provoked failures on CLIENT01 with a throwaway application (content not on the DP, install
-  exit 1, requirement rule failing, detection on a fantasy key) to see the content and
-  requirement verdicts on real log lines; the user agreed to the test application.
 * `ScriptType` 1/2 (VBScript/JScript) detection scripts are shown, not run. Setting types
   other than File/Folder/MSI/RegistryValue/RegistryKey are reported as "not evaluated".
+* 0x87D01107 and the other client error codes are shown as hex; the client has no message
+  table this script can read, the console's DLLs cannot be loaded here.
 * Dependencies (`AppIntentEval.log` names them) and "Collect client logs" as a console action.
 
 ## 2026-09-14 (evening) - the grid says what it means, not what the class calls it
