@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ConfigMgr console extension: open the application compliance report
+
+  Installed by Install-AZITCTKConsoleExtension.ps1 into
+    <AdminConsole>\XmlStorage\Extensions\Actions\{6d357b6b-96b3-45f4-ba09-b74e8ce5a509}\   the Device Collections node and its folders
+  The GUID is the RootNodeDescription of the Device Collections node in this console's
+  XmlStorage\ConsoleRoot\AssetManagementNode.xml; folders below a node carry the node's actions.
+
+  Placeholders ##EXT_PATH##, ##REPORT_SCRIPT##, ##REPORT##, ##FOLDER## and ##SKIPCERT## are filled in by
+  the installer. Runtime tokens the console replaces: ##SUB:__Server##, ##SUB:SiteCode##.
+-->
+<ActionDescription
+    Class="Executable"
+    DisplayName="AZITC: Application compliance report"
+    MnemonicDisplayName="AZITC: Application compliance report"
+    Description="Opens the report 'Anwendungs-Installationsstatus - Compliance-Übersicht' of the reporting point in the browser">
+  <ShowOn>
+    <string>ContextMenu</string>
+  </ShowOn>
+  <ImagesDescription>
+    <ResourceAssembly>
+      <Assembly>AdminUI.UIResources.dll</Assembly>
+      <Type>Microsoft.ConfigurationManagement.AdminConsole.UIResources.Properties.Resources.resources</Type>
+    </ResourceAssembly>
+    <ImageResourceName>Report</ImageResourceName>
+  </ImagesDescription>
+  <Executable>
+    <FilePath>##EXT_PATH##\AZITC-TK-Launcher.exe</FilePath>
+    <Parameters>"##REPORT_SCRIPT##" -Report "##REPORT##" -Folder "##FOLDER##" -SmsProvider "##SUB:__Server##" -SiteCode "##SUB:SiteCode##"##SKIPCERT##</Parameters>
+  </Executable>
+</ActionDescription>

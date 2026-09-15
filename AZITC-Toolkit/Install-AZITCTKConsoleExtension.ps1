@@ -20,6 +20,11 @@
 .PARAMETER SkipCertificateCheck
     Pass -SkipCertificateCheck to the window (self-signed AdminService certificate). Default on;
     -SkipCertificateCheck:$false once the provider has a PKI certificate.
+.PARAMETER Report
+    The report the action on the Device Collections node and its folders opens. Default: the
+    compliance overview of the sccm-reports repository. '' installs no report action.
+.PARAMETER ReportFolder
+    The SSRS folder of that report below the site's root folder.
 .PARAMETER Uninstall
     Remove the action files and the extension folder.
 #>
@@ -27,6 +32,8 @@
 param(
     [string]$ConsolePath = '',
     [bool]$SkipCertificateCheck = $true,
+    [string]$Report = 'Anwendungs-Installationsstatus - Compliance-Übersicht',
+    [string]$ReportFolder = 'Softwareverteilung - Anwendungsüberwachung',
     [switch]$Uninstall
 )
 
@@ -47,12 +54,16 @@ if (-not $ConsolePath -or -not (Test-Path -LiteralPath $ConsolePath)) { throw 'A
 Write-Host "AdminConsole: $ConsolePath"
 
 $actionGuids = @('{ed9dee86-eadd-4ac8-82a1-7234a4646e62}', '{3fd01cd1-9e01-461e-92cd-94866b8d1f39}')
+$collectionNodeGuid = '{6d357b6b-96b3-45f4-ba09-b74e8ce5a509}'     # Device Collections node and its folders
 $extDir = Join-Path -Path $ConsolePath -ChildPath 'extensions\AZITC-Toolkit'
 $xmlName = 'AZITC-TK.xml'
+$reportXmlName = 'AZITC-TK-Report.xml'
 
 if ($Uninstall) {
-    foreach ($g in $actionGuids) {
-        $f = Join-Path -Path $ConsolePath -ChildPath "XmlStorage\Extensions\Actions\$g\$xmlName"
+    $files = @()
+    foreach ($g in $actionGuids) { $files += (Join-Path -Path $ConsolePath -ChildPath "XmlStorage\Extensions\Actions\$g\$xmlName") }
+    $files += (Join-Path -Path $ConsolePath -ChildPath "XmlStorage\Extensions\Actions\$collectionNodeGuid\$reportXmlName")
+    foreach ($f in $files) {
         if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force; Write-Host "Removed: $f" }
         $d = Split-Path -Path $f -Parent
         if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force; Write-Host "Removed: $d" }
@@ -65,7 +76,7 @@ if ($Uninstall) {
 # --- files ------------------------------------------------------------------
 
 if (-not (Test-Path -LiteralPath $extDir)) { New-Item -ItemType Directory -Path $extDir -Force | Out-Null }
-foreach ($n in 'AZITC-TK.ps1', 'AZITC-TK-AdminService.ps1', 'VERSION') {
+foreach ($n in 'AZITC-TK.ps1', 'AZITC-TK-AdminService.ps1', 'AZITC-TK-OpenReport.ps1', 'VERSION') {
     $src = Join-Path -Path $PSScriptRoot -ChildPath $n
     if (-not (Test-Path -LiteralPath $src)) { throw "Missing: $src" }
     Copy-Item -LiteralPath $src -Destination (Join-Path $extDir $n) -Force
@@ -95,6 +106,18 @@ foreach ($g in $actionGuids) {
     [System.IO.File]::WriteAllText($target, $content, $utf8)
     Write-Host "Action:   $target"
 }
+
+# the report action on the Device Collections node and its folders
+$reportTarget = Join-Path -Path $ConsolePath -ChildPath "XmlStorage\Extensions\Actions\$collectionNodeGuid\$reportXmlName"
+if ($Report) {
+    $reportScript = Join-Path -Path $extDir -ChildPath 'AZITC-TK-OpenReport.ps1'
+    $rt = Get-Content -LiteralPath (Join-Path $PSScriptRoot $reportXmlName) -Raw -Encoding UTF8
+    $rc = $rt.Replace('##EXT_PATH##', $extDir).Replace('##REPORT_SCRIPT##', $reportScript).Replace('##REPORT##', $Report).Replace('##FOLDER##', $ReportFolder).Replace('##SKIPCERT##', $skip)
+    $dir = Split-Path -Path $reportTarget -Parent
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    [System.IO.File]::WriteAllText($reportTarget, $rc, $utf8)
+    Write-Host "Action:   $reportTarget"
+} elseif (Test-Path -LiteralPath $reportTarget) { Remove-Item -LiteralPath $reportTarget -Force; Write-Host "Removed:  $reportTarget" }
 
 Write-Host ''
 Write-Host 'Installed. Close the console completely and start it again.'

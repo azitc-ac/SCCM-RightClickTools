@@ -158,6 +158,16 @@ is Software Center's *Update available*; the new revision is used when somebody 
 The grid counts it as reached, the verdict is OK with that explanation, the action script's watch
 loop accepts it as installed.
 
+**Report action** (2026-09-16): right-click on the Device Collections node or a folder below it -
+`AZITC: Application compliance report` opens `Anwendungs-Installationsstatus - Compliance-Übersicht` in the
+browser. Node GUID `6d357b6b-96b3-45f4-ba09-b74e8ce5a509` (RootNodeDescription `DevicesNode` in
+AssetManagementNode.xml; a node's actions show on its folders). `AZITC-TK-OpenReport.ps1` reads
+`SMS_SCI_SysResUse` (role SMS SRS Reporting Point: `ReportServerUri` `http://cm01/ReportServer`,
+`RootFolder` `ConfigMgr_L01`, `ReportManagerUri` empty on the lab site - the portal is derived,
+`/ReportServer` -> `/Reports`) and opens `<portal>/report/<root>/<folder>/<report>`; URL verified with
+HTTP 200 and the report path on the lab reporting point. Errors land in a message box. Report and
+folder are installer parameters.
+
 **Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
 LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself
 (one background job, 16 s on CLIENT01) and puts the files on top of the list, newest first; a listing
