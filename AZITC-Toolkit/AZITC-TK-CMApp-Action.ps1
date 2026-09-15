@@ -239,7 +239,7 @@ do {
     # failures in the published list too, but acting on an unconfirmed number would cut the
     # watch of a run that is still going; the window colours them red, which costs nothing.
     if ($st.EvaluationState -in @(4, 13)) { $failed = $true; break }
-    $isInstalled = ($st.InstallState -eq 'Installed')
+    $isInstalled = ($st.InstallState -in 'Installed', 'NotUpdated')
     # Done when the state flipped to what was asked for and the client is no longer enforcing.
     if ($isInstalled -eq $wantInstalled -and $st.EvaluationState -notin @(5, 6, 7, 10, 11, 12) -and ($sawEnforcing -or $Action -eq 'Repair' -or $st.EvaluationState -in @(1, 2, 3))) {
         # For Repair the install state does not change; accept once enforcement has run.

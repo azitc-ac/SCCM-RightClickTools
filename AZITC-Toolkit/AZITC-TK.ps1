@@ -768,7 +768,9 @@ function Get-TKTargetText {
 function Get-TKDeploymentVerdict {
     param([string]$InstallState, [string]$ResolvedState, [int]$EvaluationState)
 
-    $installed = ($InstallState -eq 'Installed')
+    # NotUpdated = installed with an older revision of the deployment type; the client treats
+    # that as compliant and runs nothing on its own (measured 2026-09-16), so the target is reached
+    $installed = ($InstallState -in 'Installed', 'NotUpdated')
     if ($ResolvedState -eq 'None' -or [string]::IsNullOrWhiteSpace($ResolvedState)) { return 'not targeted' }
     if ($ResolvedState -eq 'Available' -and -not $installed) { return 'offered' }
     # Display only, so the states that were never observed may be used here: a

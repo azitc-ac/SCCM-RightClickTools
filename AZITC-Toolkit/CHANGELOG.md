@@ -151,7 +151,12 @@ Type:2 checks). `root\ccm\SoftMgmtAgent:CCM_ExecutionRequestEx` is ExecMgr's que
 NextRetryTime, RetryCount, TaskPauseReason). The script lists both, the verdicts name the next window
 that gates applications (types 1 and 2), whether the DT's maximum run time fits into it, whether the
 deployment ignores windows, and the queue state. `InstallState = NotUpdated` (installed with an older
-revision, the client re-runs the install as an update) got its own verdict and grid wording.
+revision) got its own verdict and grid wording - and a correction an hour later, from the customer
+client: with the window open and ServiceWindowManager saying `Program can run`, the client ran
+nothing; AppIntentEval reads the new revision as `Current State = Installed`, compliant. NotUpdated
+is Software Center's *Update available*; the new revision is used when somebody starts an action.
+The grid counts it as reached, the verdict is OK with that explanation, the action script's watch
+loop accepts it as installed.
 
 **Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
 LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself

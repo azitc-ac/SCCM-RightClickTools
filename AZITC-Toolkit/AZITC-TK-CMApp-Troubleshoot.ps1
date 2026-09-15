@@ -787,7 +787,7 @@ if (-not $app) {
 } else {
     $required = @($assignments | Where-Object { $_.Purpose -like 'Required*' })
     $wantInstalled = ($app.ResolvedState -eq 'Installed')
-    $isInstalled = ($app.InstallState -eq 'Installed')
+    $isInstalled = ($app.InstallState -in 'Installed', 'NotUpdated')   # NotUpdated: installed, older revision - compliant for the client
     $es = [int]$app.EvaluationState
     $main = $dts | Where-Object { $_.Supersession -ne 'Superseded' -and $_.Applicability -eq 'Applicable' } | Select-Object -First 1
     if (-not $main) { $main = $dts | Where-Object { $_.Supersession -ne 'Superseded' } | Select-Object -First 1 }
@@ -818,16 +818,12 @@ if (-not $app) {
         foreach ($a in $arp) { $v = & $verOf $a.DisplayVersion; if ($null -eq $v -or $null -eq $appVer) { $arpUnknown += $a } elseif ($v -lt $appVer) { $arpOlder += $a } else { $arpSame += $a } }
         if ($detErr) { Add-Verdict 'Fail' ('The detection of "' + $main.Name + '" rev ' + $main.Revision + ' does not produce a result on this device: ' + $dres + '. The client reports such an app as failed/unknown and never as installed.') 'Fix the detection method (a script must exit 0 and write to stdout only when installed; nothing on stderr).' }
         elseif ($app.InstallState -eq 'NotUpdated') {
-            # installed, but with an older revision of the deployment type: the client re-runs
-            # the install with the new revision ("Update" in Software Center), for a required
-            # deployment on its own - in a maintenance window when one applies
-            $wt = ''
-            if ($windowInfo.Restricting.Count -gt 0 -and -not [bool](@($required | Select-Object -First 1).OverrideServiceWindows)) {
-                if ($windowInfo.ActiveNow.Count -gt 0) { $wt = ' A maintenance window is open now (' + $windowInfo.ActiveNow[0].TypeName + ' until ' + $windowInfo.ActiveNow[0].EndLocal.Replace('T', ' ') + ' device time), so the update is due right now.' }
-                elseif ($windowInfo.Next) { $wt = ' It waits for the next maintenance window: ' + $windowInfo.Next.TypeName + ' ' + $windowInfo.Next.StartLocal.Replace('T', ' ') + ' device time.' }
-            }
-            $qt = ''; $qOpen = @($queue | Where-Object { $_.State -notin 'Completed', 'Expired' }); if ($qOpen.Count -gt 0) { $qt = ' Execution queue: ' + $qOpen[-1].State + $(if ($qOpen[-1].RunningState) { '/' + $qOpen[-1].RunningState } else { '' }) + '.' }
-            Add-Verdict $(if ($required.Count -gt 0) { 'Warn' } else { 'Info' }) ('Installed (detection true: ' + $clauseText + '), but with an older revision of the deployment type; the client holds revision ' + $main.Revision + ' now and will run the install again with it - an update, not a repair.' + $(if ($required.Count -gt 0) { ' The deployment is required, so this happens on its own.' } else { ' The deployment is available only; Software Center offers it as Update.' }) + $wt + $qt) 'Wait for the update run; the attempt then appears in the list below with the new revision. Install in this window runs it right away.'
+            # Installed, but with an older revision of the deployment type. Seen on a customer
+            # client with the window open and ServiceWindowManager saying "can run": the client
+            # does nothing - AppIntentEval reads the new revision as "Current State = Installed",
+            # compliant, so a required deployment has nothing to enforce. NotUpdated is Software
+            # Center's "Update available"; the new revision runs when somebody starts it.
+            Add-Verdict 'OK' ('Installed (detection true: ' + $clauseText + '); a newer revision of the deployment type (' + $main.Revision + ') is on the client, but nothing runs on its own while the detection stays true - the intent evaluation reads it as compliant, whatever the maintenance window says. Software Center shows this as "Update". The new revision is used the next time an install, uninstall or repair is started.') 'Nothing to do. To apply the new revision now, press Install here - a user-initiated run, the client starts it at once.'
         }
         elseif ($detTrue -and -not $isInstalled) { Add-Verdict 'Warn' ('Evaluated now, the detection says DISCOVERED, while the client''s last evaluation (' + $appInfo.LastEvalUtc + ' UTC) recorded ' + $app.InstallState + '. The device changed since, or the client has not re-evaluated.') 'Run "Policy + evaluate" - the state should turn to Installed.' }
         elseif ($detTrue -and $isInstalled -and $wantInstalled) {
