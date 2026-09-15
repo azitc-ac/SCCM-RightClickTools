@@ -135,8 +135,17 @@ try {
     # Second Get-CimInstance call materialises lazy properties of CCM_Application.
     $ccmApps = Get-CimInstance -Namespace 'root\ccm\ClientSDK' -ClassName 'CCM_Application' -ErrorAction Stop | Get-CimInstance -ErrorAction Stop
     foreach ($a in $ccmApps) {
+        # The ClientSDK stores the local clock with a "+000" offset (raw "20260831132700.000000+000"
+        # for a 13:27 local deadline that the site holds as 11:27 UTC), so CIM hands over a
+        # DateTime shifted by the zone offset. Undo that: back to the digits, read them as local.
         $deadline = ''
-        if ($a.Deadline) { $deadline = ([datetime]$a.Deadline).ToUniversalTime().ToString('s') }
+        if ($a.Deadline) {
+            try {
+                $d = [datetime]$a.Deadline
+                if ($d.Kind -eq 'Local') { $d = $d.ToUniversalTime() }
+                $deadline = [datetime]::SpecifyKind($d, 'Local').ToUniversalTime().ToString('s')
+            } catch { $deadline = [string]$a.Deadline }
+        }
         $apps.Add([pscustomobject]@{
             Id  = [string]$a.Id
             Rev = [string]$a.Revision

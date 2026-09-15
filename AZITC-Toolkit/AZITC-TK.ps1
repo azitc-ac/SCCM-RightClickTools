@@ -135,7 +135,7 @@ $connectScript = {
     }
     # Script GUIDs by name, once; warn about approval here so the window can show it.
     $scripts = @{}
-    foreach ($n in 'AZITC-TK-Software-Get', 'AZITC-TK-Software-Action', 'AZITC-TK-Log-Get', 'AZITC-TK-Client-Action', 'AZITC-TK-CMApp-Action', 'AZITC-TK-Client-Get', 'AZITC-TK-Client-Manage') {
+    foreach ($n in 'AZITC-TK-Software-Get', 'AZITC-TK-Software-Action', 'AZITC-TK-Log-Get', 'AZITC-TK-Client-Action', 'AZITC-TK-CMApp-Action', 'AZITC-TK-Client-Get', 'AZITC-TK-Client-Manage', 'AZITC-TK-CMApp-Troubleshoot') {
         try { $s = Get-TKScript -Name $n -WarningAction SilentlyContinue; $scripts[$n] = "$($s.ScriptGuid) v$($s.ScriptVersion) approval=$($s.ApprovalState)" } catch { $scripts[$n] = "missing: $($_.Exception.Message)" }
     }
     [pscustomobject]@{
@@ -196,6 +196,12 @@ $notifyScript = {
 $cmAppScript = {
     param($DeviceName, $Action, $AppId, $Revision)
     Invoke-TKCMAppAction -DeviceName $DeviceName -Action $Action -AppId $AppId -Revision $Revision -TimeoutMin 10
+}
+
+$troubleshootScript = {
+    param($DeviceName, $AppId)
+    $r = Invoke-TKCMAppTroubleshoot -DeviceName $DeviceName -AppId $AppId
+    [pscustomobject]@{ Result = $r; Text = (Format-TKTroubleshoot -Result $r) }
 }
 
 $clientGetScript = {
@@ -333,6 +339,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
                   <Button x:Name="BtnAppInstall" Content="Install" IsEnabled="False"/>
                   <Button x:Name="BtnAppUninstall" Content="Uninstall" IsEnabled="False"/>
                   <Button x:Name="BtnAppRepair" Content="Repair" IsEnabled="False"/>
+                  <Button x:Name="BtnAppTroubleshoot" Content="Troubleshoot" IsEnabled="False" Margin="12,0,0,0" ToolTip="Why is this application not where the deployment wants it? Read on the client: the detection method of the deployment type evaluated clause by clause against the device (file, registry, MSI, or the detection script run as the client runs it), every enforcement attempt with exit code and post-install detection, when the client last evaluated and when it will again, what Add/Remove Programs really holds - and a verdict drawn from all of that. About 20 s. Runs the detection script of the deployment type; changes nothing else."/>
                   <Button x:Name="BtnPolicyEval" Content="Policy + evaluate, then refresh" ToolTip="Client notification: machine policy, 20 s, application deployment evaluation, 15 s, then the software list is read again. What the grid shows is the client's last finding; this makes it a fresh one."/>
                   <TextBlock Text="through the ConfigMgr client, watched until the state changes; what the client offers is in the Possible actions column" Foreground="#555555" VerticalAlignment="Center" Margin="6,0,0,0"/>
                 </DockPanel>
@@ -558,7 +565,7 @@ $script:ServicesTable = $null
 $script:ProcessesTable = $null
 $script:CacheTable = $null
 $script:Actionable = @($ui.BtnRefresh, $ui.BtnInspect, $ui.BtnUninstall, $ui.BtnUninstallReEval, $ui.BtnRepair, $ui.BtnRemoveEntry, $ui.BtnLog, $ui.BtnLogList,
-    $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair, $ui.BtnPolicyEval,
+    $ui.BtnAppInstall, $ui.BtnAppUninstall, $ui.BtnAppRepair, $ui.BtnAppTroubleshoot, $ui.BtnPolicyEval,
     $ui.BtnClientRefresh, $ui.BtnSvcStart, $ui.BtnSvcStop, $ui.BtnSvcRestart, $ui.BtnProcKill, $ui.BtnCacheDelete, $ui.BtnCacheClear,
     $ui.BtnNotifyPolicy, $ui.BtnNotifyAppEval, $ui.BtnNotifySumEval, $ui.BtnNotifyHwInv, $ui.BtnNotifySwInv, $ui.BtnNotifyDdr, $ui.BtnNotifyCompliance,
     $ui.BtnScriptPolicy, $ui.BtnScriptAppEval, $ui.BtnScriptAll, $ui.BtnScriptHwInv, $ui.BtnScriptSwInv, $ui.BtnScriptUpdScan)
@@ -603,6 +610,7 @@ function Update-SelectionButtons {
     $ui.BtnAppInstall.IsEnabled   = ($allowed -match '\bInstall\b')
     $ui.BtnAppUninstall.IsEnabled = ($allowed -match '\bUninstall\b')
     $ui.BtnAppRepair.IsEnabled    = ($allowed -match '\bRepair\b')
+    $ui.BtnAppTroubleshoot.IsEnabled = ($null -ne $app) -and (-not $script:Busy)
 
     # Client tab
     $svc = $ui.GridServices.SelectedItem
@@ -1017,6 +1025,28 @@ function Start-CMAppAction {
     }
 }
 
+function Start-CMAppTroubleshoot {
+    $row = $ui.GridApps.SelectedItem
+    if (-not $row) { return }
+    $name = [string]$row.Row['Name']; $ver = [string]$row.Row['Version']; $id = [string]$row.Row['Id']
+    $ui.LowerTabs.SelectedIndex = 0
+    $ui.ActionResult.Text = "Troubleshoot '$name $ver' ... (detection evaluated on the client, logs read, about 20 s)"
+    Set-Busy $true "Troubleshoot '$name' on $($script:Device.Name)..."
+    Invoke-TKJob -Name 'Troubleshoot' -Script $troubleshootScript -Arguments @($script:Device.Name, $id) -OnDone {
+        param($r)
+        Set-Busy $false
+        if (-not $r.Ok) { $ui.ActionResult.Text = $r.Error; Show-Error "$($r.Name) failed: $($r.Error)"; return }
+        $v = $r.Value
+        $ui.ActionResult.Text = $v.Text
+        $top = @($v.Result.Verdicts | Where-Object { $_.Level -in 'Fail', 'Warn' } | Select-Object -First 1)
+        if ($top.Count -eq 0) { $top = @($v.Result.Verdicts | Select-Object -First 1) }
+        $line = 'no verdict'; if ($top.Count -gt 0) { $line = '[' + $top[0].Level + '] ' + $top[0].Text }
+        if ($line.Length -gt 160) { $line = $line.Substring(0, 157) + '...' }
+        $ui.StatusText.Text = "Troubleshoot: $line ($($r.Seconds) s)"
+        $ui.StatusOperation.Text = "OperationId $($v.Result.OperationId)"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Client tab: overview, services, processes, cache
 # ---------------------------------------------------------------------------
@@ -1127,6 +1157,7 @@ $ui.BtnPolicyEval.Add_Click({
 $ui.BtnAppInstall.Add_Click({ Start-CMAppAction -Action 'Install' })
 $ui.BtnAppUninstall.Add_Click({ Start-CMAppAction -Action 'Uninstall' })
 $ui.BtnAppRepair.Add_Click({ Start-CMAppAction -Action 'Repair' })
+$ui.BtnAppTroubleshoot.Add_Click({ Start-CMAppTroubleshoot })
 $ui.GridApps.Add_SelectionChanged({ Update-SelectionButtons })
 $ui.BtnClientRefresh.Add_Click({ Start-ClientRefresh })
 $ui.SvcSearch.Add_TextChanged({ Apply-ClientFilters })

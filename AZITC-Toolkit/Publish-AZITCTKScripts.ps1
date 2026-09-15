@@ -88,7 +88,13 @@ $catalogue = @(
        Parameters = @(
            @{ Name = 'Target'; Type = 'System.String'; Required = $true;  Default = ''; Values = @('Service', 'Process', 'Cache') },
            @{ Name = 'Action'; Type = 'System.String'; Required = $true;  Default = ''; Values = @('Start', 'Stop', 'Restart', 'Kill', 'Delete', 'Clear') },
-           @{ Name = 'Name';   Type = 'System.String'; Required = $false; Default = '' }) }
+           @{ Name = 'Name';   Type = 'System.String'; Required = $false; Default = '' }) },
+    @{ Name = 'AZITC-TK-CMApp-Troubleshoot'; Timeout = 300
+       Description = 'AZITC Toolkit - why is this application not where the deployment wants it: detection clauses evaluated on the device, enforcement history, evaluation cycle; gzip+base64 JSON envelope.'
+       Parameters = @(
+           @{ Name = 'AppId';    Type = 'System.String'; Required = $true;  Default = '' },
+           @{ Name = 'Days';     Type = 'System.Int32';  Required = $false; Default = '14' },
+           @{ Name = 'MaxLines'; Type = 'System.Int32';  Required = $false; Default = '25' }) }
 )
 
 if ($SkipCertificateCheck) { Connect-TKAdminService -SmsProvider $SmsProvider -SkipCertificateCheck } else { Connect-TKAdminService -SmsProvider $SmsProvider }

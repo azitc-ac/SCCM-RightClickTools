@@ -979,6 +979,159 @@ function Invoke-TKClientManage {
     return $parsed
 }
 
+# --- Troubleshooting ----------------------------------------------------------
+
+function ConvertFrom-TKScheduleString {
+    <#
+    .SYNOPSIS
+        Decodes a ConfigMgr schedule token ("0062200000100008") through the provider's own
+        SMS_ScheduleMethods.ReadFromString and words it: "every 1 day", "every 7 days" ...
+        Returns the wording, or the raw token when the provider cannot be asked.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Token)
+    $t = $Token
+    if ($t -match 'ScheduleString=([0-9A-Fa-f]{16})') { $t = $Matches[1] }
+    if ($t -notmatch '^[0-9A-Fa-f]{16}$') { return $Token }
+    try {
+        $r = Invoke-TKRest -Route wmi -Method Post -Path 'SMS_ScheduleMethods.ReadFromString' -Body @{ StringData = $t }
+        $parts = @()
+        foreach ($tok in @($r.TokenData)) {
+            $type = [string]$tok.'@odata.type' -replace '^#AdminService\.', ''
+            switch ($type) {
+                'SMS_ST_RecurInterval' {
+                    if ([int]$tok.DaySpan -gt 0) { $parts += ('every {0} day{1}' -f $tok.DaySpan, $(if ([int]$tok.DaySpan -ne 1) { 's' } else { '' })) }
+                    elseif ([int]$tok.HourSpan -gt 0) { $parts += ('every {0} hour{1}' -f $tok.HourSpan, $(if ([int]$tok.HourSpan -ne 1) { 's' } else { '' })) }
+                    elseif ([int]$tok.MinuteSpan -gt 0) { $parts += ('every {0} minute{1}' -f $tok.MinuteSpan, $(if ([int]$tok.MinuteSpan -ne 1) { 's' } else { '' })) }
+                    else { $parts += 'recurring interval' }
+                }
+                'SMS_ST_RecurWeekly'           { $parts += ('weekly (day {0}, every {1} week(s))' -f $tok.Day, $tok.ForNumberOfWeeks) }
+                'SMS_ST_RecurMonthlyByDate'    { $parts += ('monthly on day {0}' -f $tok.MonthDay) }
+                'SMS_ST_RecurMonthlyByWeekday' { $parts += 'monthly by weekday' }
+                'SMS_ST_NonRecurring'          { $parts += ('once at {0}' -f $tok.StartTime) }
+                default                        { $parts += $type }
+            }
+        }
+        if ($parts.Count -eq 0) { return $Token }
+        return ($parts -join ', ')
+    } catch { return $Token }
+}
+
+function Invoke-TKCMAppTroubleshoot {
+    <#
+    .SYNOPSIS
+        Runs AZITC-TK-CMApp-Troubleshoot on a device: the application's state, its deployments,
+        the detection method of every deployment type evaluated on the device clause by clause,
+        the enforcement attempts with exit codes and post-install detection, the evaluation
+        cycle, Add/Remove Programs - and the verdicts drawn from all of that.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeviceName,
+        [Parameter(Mandatory = $true)][string]$AppId,
+        [int]$Days = 14,
+        [int]$MaxLines = 25,
+        [string]$ScriptName = 'AZITC-TK-CMApp-Troubleshoot',
+        [int]$TimeoutSec = 300
+    )
+    $dev = Get-TKDevice -Name $DeviceName
+    $scr = Get-TKScript -Name $ScriptName
+    $res = Invoke-TKScript -ResourceId $dev.MachineId -Script $scr -Parameters @{ AppId = $AppId; Days = $Days; MaxLines = $MaxLines } -TimeoutSec $TimeoutSec
+    if ($res.ExitCode -ne 0 -or -not $res.Output) { throw "Script exit $($res.ExitCode), state $($res.State). Output: $($res.Output)" }
+    $envelope = ConvertFrom-TKEnvelope -Json $res.Output
+    if ($envelope.Error) { Write-Warning "CMApp-Troubleshoot on $($envelope.Host): $($envelope.Error)" }
+    $p = $envelope.Payload
+    # the schedule token is worded by the provider, the client only knows the token
+    $cycle = $p.Cycle
+    if ($cycle -and $cycle.PSObject.Properties['AppDeploymentEvalSchedule'] -and $cycle.AppDeploymentEvalSchedule) {
+        $cycle | Add-Member -NotePropertyName AppDeploymentEvalScheduleText -NotePropertyValue (ConvertFrom-TKScheduleString -Token ([string]$cycle.AppDeploymentEvalSchedule)) -Force
+    }
+    return [pscustomobject]@{
+        Host            = $envelope.Host
+        TimeUtc         = $envelope.TimeUtc
+        OperationId     = $res.OperationId
+        Truncated       = $envelope.Truncated
+        Error           = $envelope.Error
+        App             = $p.App
+        Assignments     = @($p.Assignments)
+        DeploymentTypes = @($p.DeploymentTypes)
+        AppIntent       = @($p.AppIntent)
+        Cycle           = $cycle
+        Arp             = @($p.Arp)
+        Verdicts        = @($p.Verdicts)
+        Logs            = @($p.Logs)
+        Days            = $p.Days
+    }
+}
+
+function Format-TKTroubleshoot {
+    <#
+    .SYNOPSIS
+        The troubleshoot result as text: verdicts first, then the facts they rest on.
+        ConvertFrom-Json turns ISO strings back into DateTime; every time is written as UTC.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Result)
+    $t = { param($v) if ($null -eq $v -or $v -eq '') { return '' }; if ($v -is [datetime]) { return $v.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC' }; return ([string]$v -replace 'T', ' ') + ' UTC' }
+    $sb = New-Object System.Text.StringBuilder
+    $a = $Result.App
+    $null = $sb.AppendLine(('{0} {1}  rev {2}  on {3}, read {4}' -f $a.Name, $a.Version, $a.Revision, $Result.Host, (& $t $Result.TimeUtc)))
+    $null = $sb.AppendLine(('client state: {0} / wanted {1} / evaluation {2}{3}, applicability {4}, supersession {5}' -f $a.InstallState, $a.ResolvedState, $a.EvaluationState, $(if ([int64]$a.ErrorCode -ne 0) { ' error ' + $a.ErrorHex } else { '' }), $a.ApplicabilityState, $a.SupersessionState))
+    $null = $sb.AppendLine(('last evaluated {0}, last install {1}, deadline {2}' -f (& $t $a.LastEvalUtc), (& $t $a.LastInstallUtc), (& $t $a.DeadlineUtc)))
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('VERDICT')
+    foreach ($v in $Result.Verdicts) {
+        $null = $sb.AppendLine(('  [{0}] {1}' -f $v.Level.ToUpper(), $v.Text))
+        if ($v.Next) { $null = $sb.AppendLine('         next: ' + $v.Next) }
+    }
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('DEPLOYMENTS IN THE CLIENT''S POLICY')
+    if ($Result.Assignments.Count -eq 0) { $null = $sb.AppendLine('  none') }
+    foreach ($as in $Result.Assignments) { $null = $sb.AppendLine(('  {0}: {1}, policy revision {2}, start {3}, deadline {4}{5}' -f $as.Purpose, $as.Name, $as.PolicyRevision, (& $t $as.StartUtc), (& $t $as.DeadlineUtc), $(if ($as.OverrideServiceWindows) { ', ignores maintenance windows' } else { '' }))) }
+    $null = $sb.AppendLine()
+    foreach ($d in $Result.DeploymentTypes) {
+        $null = $sb.AppendLine(('DEPLOYMENT TYPE "{0}" rev {1}  ({2}{3})' -f $d.Name, $d.Revision, $d.Applicability, $(if ($d.Supersession -and $d.Supersession -ne 'None') { ', ' + $d.Supersession } else { '' })))
+        $det = $d.Detection
+        $null = $sb.AppendLine(('  Detection ({0}): {1}{2}' -f $det.Type, $det.Result, $(if ($det.Note) { ' - ' + $det.Note } else { '' })))
+        foreach ($c in @($det.Clauses)) { $null = $sb.AppendLine(('    [{0}] {1}' -f $c.Result, $c.Clause)); if ($c.Actual) { $null = $sb.AppendLine('          on the device: ' + $c.Actual) } }
+        if ($det.PSObject.Properties['StdOut']) {
+            $null = $sb.AppendLine(('    script: {0}, {1} line(s), exit {2}, {3} s' -f $det.Language, $det.Lines, $det.ExitCode, $det.Seconds))
+            $null = $sb.AppendLine('    stdout: ' + $(if ($det.StdOut) { $det.StdOut } else { '(empty)' }))
+            if ($det.StdErr) { $null = $sb.AppendLine('    stderr: ' + $det.StdErr) }
+        }
+        if ($d.Install) { $null = $sb.AppendLine(('  Install: {0}  [{1}, max {2} min, success codes {3}, reboot codes {4}]' -f $d.Install.CommandLine, $d.Install.Context, $d.Install.MaxExecuteTimeMin, $d.Install.SuccessExitCodes, $d.Install.RebootExitCodes)) }
+        if ($d.LastEnforce) { $null = $sb.AppendLine(('  Last enforcement result kept by the client: {0}, exit {1} ({2}), rev {3}' -f $d.LastEnforce.ExecutionStatus, $d.LastEnforce.ExitCode, $d.LastEnforce.ExitHex, $d.LastEnforce.Revision)) }
+        $null = $sb.AppendLine(('  Enforcement attempts in the last {0} days: {1}' -f $Result.Days, $d.AttemptsTotal))
+        foreach ($at in @($d.Attempts)) {
+            $null = $sb.AppendLine(('    {0}  {1} rev {2}: exit {3}{4}, {5} s, detection before: {6}, after: {7}' -f (& $t $at.StartUtc), $at.Action, $at.Revision, $(if ($null -ne $at.ExitCode) { $at.ExitCode } else { '?' }), $(if ($at.ExitMeaning) { ' (' + $at.ExitMeaning + ')' } else { '' }), $at.Seconds, $(if ($at.PreDetection) { $at.PreDetection } else { '-' }), $(if ($at.PostDetection) { $at.PostDetection } else { '-' })))
+            foreach ($n in @($at.Notes)) { $null = $sb.AppendLine('        ' + $n) }
+        }
+        $null = $sb.AppendLine(('  Detection results logged for rev {0} (AppDiscovery.log{1}):' -f $d.Revision, $(if ([int]$d.DiscoveryOtherRevisions -gt 0) { ', ' + $d.DiscoveryOtherRevisions + ' lines of older revisions skipped' } else { '' })))
+        if (@($d.DiscoveryHistory).Count -eq 0) { $null = $sb.AppendLine('    none in the window') }
+        foreach ($l in @($d.DiscoveryHistory)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+        if (@($d.IntentHistory).Count -gt 0) {
+            $null = $sb.AppendLine('  Intent evaluations (AppIntentEval.log):')
+            foreach ($l in @($d.IntentHistory)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+        }
+        $null = $sb.AppendLine()
+    }
+    $c = $Result.Cycle
+    $null = $sb.AppendLine('EVALUATION CYCLE')
+    if ($c) {
+        $sched = ''; if ($c.PSObject.Properties['AppDeploymentEvalScheduleText']) { $sched = $c.AppDeploymentEvalScheduleText } elseif ($c.PSObject.Properties['AppDeploymentEvalSchedule']) { $sched = $c.AppDeploymentEvalSchedule }
+        $null = $sb.AppendLine(('  application deployment evaluation: last {0}, schedule {1}' -f (& $t $c.AppDeploymentEvalLastUtc), $sched))
+        $null = $sb.AppendLine(('  machine policy retrieval: last {0}' -f (& $t $c.MachinePolicyLastUtc)))
+        if ($c.PSObject.Properties['LastAssignmentRequest']) { $null = $sb.AppendLine('  ' + ([string]$c.LastAssignmentRequest -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+    }
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('ADD/REMOVE PROGRAMS (entries matching the name)')
+    if ($Result.Arp.Count -eq 0) { $null = $sb.AppendLine('  none') }
+    foreach ($e in $Result.Arp) { $null = $sb.AppendLine(('  {0}  {1}  {2}  [{3}, {4}{5}]' -f $e.DisplayName, $e.DisplayVersion, $e.Publisher, $e.Key, $e.View, $(if ($e.WindowsInstaller) { ', MSI' } else { '' }))) }
+    if ($Result.Truncated) { $null = $sb.AppendLine(); $null = $sb.AppendLine('(histories shortened to fit the output limit)') }
+    if ($Result.Error) { $null = $sb.AppendLine(); $null = $sb.AppendLine('errors on the client: ' + $Result.Error) }
+    return $sb.ToString()
+}
+
 <#
 === Usage (end-to-end test without GUI) ===================================
 

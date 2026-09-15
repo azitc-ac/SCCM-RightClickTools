@@ -1,5 +1,97 @@
 ﻿# Changelog - AZITC Toolkit
 
+## 2026-09-15 - Troubleshoot: the detection, evaluated on the device, and the attempts that led here
+
+The user's two questions: *why has an app that should be on the device not been retried for
+days?* and *why is it installed over and over, and never there afterwards?* Both are detection
+questions, and both are answered by data the client keeps locally - no site access needed.
+
+### What the client holds (verified on CLIENT01, client 5.00.9141.1011)
+
+* `root\ccm\CIModels` carries the deployment types as *synclets*, one row per DT and revision:
+  `CCM_AppDeliveryTypeSynclet` (name, revision), `Local_Detect_Synclet` with the enhanced
+  detection as XML (`ExpressionXml`: a `<Settings>` block with `File`, `Folder`, `MSI`,
+  `SimpleSetting`/`RegistryDiscoverySource` elements, and a `<Rule>` expression tree with
+  `And`/`Or` and `Equals`/`NotEquals`/`GreaterEquals`/… over `SettingReference`
+  (`PropertyPath` Version/ProductVersion/…, `Method` Value or Count) and `ConstantValue`),
+  `Script_Detect_Synclet` (`ScriptBody`, `ScriptType` 0 = PowerShell, `RunAs32Bit`),
+  `MSI_Detect_Synclet` (`ProductCode`, `ProductVersion`), `CCM_LocalInstallationSynclet`
+  (install command line, `SuccessExitCodes`, `RebootExitCodes`, `MaxExecuteTime`, context) and
+  `CCM_AppEnforceStatus` - the last enforcement result per DT: `ExecutionStatus`, `ExitCode`.
+  On CLIENT01 that row for Notepad++ read `Failure, 2278556452` = 0x87D00324, "not detected
+  after installation".
+* `CCM_ApplicationCIAssignment` in `root\ccm\Policy\Machine\ActualConfig` is the deployment:
+  `AssignmentName`, `EnforcementDeadline`, `StartTime`, `OverrideServiceWindows`,
+  `AssignedCIs` with the `<CIVersion>` = the application revision the policy carries. The
+  application id in there is `RequiredApplication_<guid>` for the same guid that
+  `CCM_Application.Id` names as `Application_<guid>`.
+* `CCM_Scheduler_History` in `root\ccm\Scheduler`: `LastTriggerTime` per schedule id; `…121`
+  is the application deployment evaluation cycle, `…021` the machine policy request. The
+  schedule token itself is in `CCM_Scheduler_ScheduledMessage.Triggers`
+  (`SMSSchedule;ScheduleString=0062200000100008;…`) and is worded by the provider:
+  `SMS_ScheduleMethods.ReadFromString` works on the `/wmi` route as a POST with
+  `{ StringData }` and returns `TokenData` (`SMS_ST_RecurInterval`, DaySpan 1 on the lab
+  client, DaySpan 7 for the update scans).
+* `AppEnforce.log` blocks: `+++ Starting Install enforcement for App DT "…" ApplicationDeliveryType
+  - <DT>, Revision - N, ContentPath - …` … `Performing detection …` / `+++ Application not
+  discovered` (before) … `Prepared command line: …` … `Process N terminated with exitcode: X` …
+  `Matched exit code X to a Success entry` or `Unmatched exit code (X) is considered an execution
+  failure` … `Performing detection …` / `+++ Discovered application` (after) … `++++++ App
+  enforcement completed (N seconds) for App DT "…" [<DT>], Revision: N`. `AppDiscovery.log`:
+  `+++ Evaluating expression to discover application` / `+++ Executing script to discover
+  application` then `+++ Discovered application` / `+++ Application not discovered` /
+  `+++ Application discovered` / `+++ Application not discovered with script detection`, each
+  with `[AppDT Id: <DT>, Revision: N]`; the client keeps evaluating the older revisions too, four
+  lines per pass on CLIENT01. `AppIntentEval.log`: `<DT>/<rev> :- Current State = …, Applicability
+  = …, ResolvedState = …, ConfigureState = …, Title = …`.
+
+**Time stamps, a trap.** The ClientSDK (`CCM_Application.LastEvalTime`, `Deadline`, …) and
+`CCM_Scheduler_History` store the *local* clock with a `+000` offset: raw
+`20260914192223.000000+000` while `AppDiscovery.log` shows that evaluation at 19:22:21 local
+(`time="…-120"`), and a 13:27 local deadline the site holds as 11:27 UTC. CIM therefore hands
+over a DateTime shifted by the zone offset. The policy's `CCM_ApplicationCIAssignment` uses
+`+***` with `UseGMTTimes=True` and is right as it comes. `AZITC-TK-Software-Get` showed the
+deadline two hours off as "UTC" since 2026-09-11 - fixed (v4), and the new script converts the
+same way (`ToIsoLocalDigits`).
+
+### What was built
+
+* `AZITC-TK-CMApp-Troubleshoot.ps1` (v6 in the site, `19C6936E-436A-4501-BB41-1F80C2F1CAD0`,
+  parameters `AppId`, `Days`, `MaxLines`; 17-27 s on CLIENT01): reads the application, its
+  assignments, and per DT the synclets; **parses `ExpressionXml` and evaluates every clause on
+  the device** - `%ProgramFiles%` in a 32-bit clause is the x86 folder, registry through the
+  32/64-bit view the clause names, MSI through `WindowsInstaller.Installer.ProductState` /
+  `ProductInfo`, versions padded to four parts so `26.02` equals `26.02.0.0` -; **runs the
+  detection script** the way the client does (SYSTEM, 64-bit unless `RunAs32Bit`, 60 s cap;
+  discovered = exit 0, stdout not empty, stderr empty); parses the three logs for the DT and the
+  current revision; reads the scheduler history; lists the ARP entries matching the name; and
+  writes verdicts in causal order (policy → applicability → detection vs. ARP → last attempt's
+  exit code and post-install detection → waiting states → deadline). One envelope, gzip+base64,
+  histories shortened first when the output limit is near.
+* Verdicts seen on real data: Notepad++ - *installer exit 0 (13 s), detection afterwards found
+  nothing (0x87D00324); evaluated now: MSI product {224C0E17-…} ProductVersion ≥ 8.9.8 → not
+  present (Unknown product); Add/Remove Programs lists Notepad++ (64-bit x64) 8.9.8 (non-MSI)* -
+  the package installs an EXE, the detection looks for an MSI. SSMS 22 - detection script
+  returns "Installed", ARP has 22.9.2, deployment carries 22.3.3: *newer version present, the
+  rule accepts it* (the first draft called that a false positive; older-than is the false
+  positive, newer-or-equal is fine). 7-Zip 26.02 - four file clauses, the two 64-bit ones true
+  with `26.02`, ARP agrees; the attempt history shows rev 7 and rev 18 with exit 0 and "not
+  discovered", rev 23 with exit 0 and "discovered" - the 2026-09-14 story in one list.
+* Library: `Invoke-TKCMAppTroubleshoot`, `Format-TKTroubleshoot` (verdicts first, then the
+  facts), `ConvertFrom-TKScheduleString` (provider-worded schedule). Window: **Troubleshoot**
+  button beside Install/Uninstall/Repair, enabled for any selected row - a green row with a
+  wrong detection is a case too -, result in the Action result pane, the top Fail/Warn verdict
+  in the status bar. `Publish-AZITCTKScripts.ps1` knows the script.
+
+### Open
+
+* Provoked failures on CLIENT01 with a throwaway application (content not on the DP, install
+  exit 1, requirement rule failing, detection on a fantasy key) to see the content and
+  requirement verdicts on real log lines; the user agreed to the test application.
+* `ScriptType` 1/2 (VBScript/JScript) detection scripts are shown, not run. Setting types
+  other than File/Folder/MSI/RegistryValue/RegistryKey are reported as "not evaluated".
+* Dependencies (`AppIntentEval.log` names them) and "Collect client logs" as a console action.
+
 ## 2026-09-14 (evening) - the grid says what it means, not what the class calls it
 
 The user looked at the ConfigMgr applications grid and stopped at two cells: **Resolved =
