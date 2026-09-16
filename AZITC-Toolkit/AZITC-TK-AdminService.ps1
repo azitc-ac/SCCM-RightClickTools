@@ -1108,16 +1108,33 @@ function Format-TKTroubleshoot {
     <#
     .SYNOPSIS
         The troubleshoot result as text: verdicts first, then the facts they rest on.
-        ConvertFrom-Json turns ISO strings back into DateTime; every time is written as UTC.
+        The envelope carries UTC (ISO strings; ConvertFrom-Json turns some back into DateTime).
+        Every time is written in the DEVICE's time - the zone the client reported - so the
+        maintenance windows, the log lines and the verdicts share one clock; the header says so.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Result)
-    $t = { param($v) if ($null -eq $v -or $v -eq '') { return '' }; if ($v -is [datetime]) { return $v.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC' }; return ([string]$v -replace 'T', ' ') + ' UTC' }
+    $tz = [TimeZoneInfo]::Local
+    if ($Result.Windows -and $Result.Windows.PSObject.Properties['TimeZone'] -and $Result.Windows.TimeZone) { try { $tz = [TimeZoneInfo]::FindSystemTimeZoneById([string]$Result.Windows.TimeZone) } catch { } }
+    $toDevice = { param($v)
+        $d = $null
+        if ($v -is [datetime]) { $d = $v } else { try { $d = [datetime]::ParseExact(([string]$v).Substring(0, 19), "yyyy-MM-dd'T'HH:mm:ss", [cultureinfo]::InvariantCulture) } catch { return $null } }
+        if ($d.Kind -eq 'Local') { $d = $d.ToUniversalTime() }
+        return [TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($d, 'Utc'), $tz)
+    }
+    $t = { param($v) if ($null -eq $v -or $v -eq '') { return '' }; $d = & $toDevice $v; if ($null -eq $d) { return [string]$v }; return $d.ToString('yyyy-MM-dd HH:mm:ss') }
+    # log lines carry "yyyy-MM-ddTHH:mm:ss  text" with the UTC time in front
+    $tl = { param($line) $s = [string]$line; if ($s -match '^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(.*)$') { $d = & $toDevice $Matches[1]; if ($d) { return $d.ToString('yyyy-MM-dd HH:mm:ss') + $Matches[2] } }; return $s }
+    $offset = $tz.GetUtcOffset([datetime]::UtcNow)
     $sb = New-Object System.Text.StringBuilder
     $a = $Result.App
-    $null = $sb.AppendLine(('{0} {1}  rev {2}  on {3}, read {4}' -f $a.Name, $a.Version, $a.Revision, $Result.Host, (& $t $Result.TimeUtc)))
-    $null = $sb.AppendLine(('client state: {0} / wanted {1} / evaluation {2}{3}, applicability {4}, supersession {5}' -f $a.InstallState, $a.ResolvedState, $a.EvaluationState, $(if ([int64]$a.ErrorCode -ne 0) { ' error ' + $a.ErrorHex } else { '' }), $a.ApplicabilityState, $a.SupersessionState))
-    $null = $sb.AppendLine(('last evaluated {0}, deadline {1} - every install/uninstall run of the last {2} days is listed per deployment type below' -f (& $t $a.LastEvalUtc), (& $t $a.DeadlineUtc), $Result.Days))
+    $known = ($a.PSObject.Properties['Found'] -and [bool]$a.Found)
+    $null = $sb.AppendLine(('{0} {1}  rev {2}  on {3}, read {4}' -f $(if ($known) { $a.Name } else { $a.Id }), $(if ($known) { $a.Version } else { '' }), $(if ($known) { $a.Revision } else { '?' }), $Result.Host, (& $t $Result.TimeUtc)))
+    $null = $sb.AppendLine(('all times are the device''s time: {0}, UTC{1}{2:hh\:mm} now' -f $tz.Id, $(if ($offset -ge [timespan]::Zero) { '+' } else { '-' }), $offset))
+    if ($known) {
+        $null = $sb.AppendLine(('client state: {0} / wanted {1} / evaluation {2}{3}, applicability {4}, supersession {5}' -f $a.InstallState, $a.ResolvedState, $a.EvaluationState, $(if ([int64]$a.ErrorCode -ne 0) { ' error ' + $a.ErrorHex } else { '' }), $a.ApplicabilityState, $a.SupersessionState))
+        $null = $sb.AppendLine(('last evaluated {0}, deadline {1} - every install/uninstall run of the last {2} days is listed per deployment type below' -f (& $t $a.LastEvalUtc), (& $t $a.DeadlineUtc), $Result.Days))
+    } else { $null = $sb.AppendLine('the client does not know this application - no policy for it has reached the device') }
     $null = $sb.AppendLine()
     $null = $sb.AppendLine('VERDICT')
     foreach ($v in $Result.Verdicts) {
@@ -1152,20 +1169,23 @@ function Format-TKTroubleshoot {
                 $lines = @($ct.($pair[1]))
                 if ($lines.Count -eq 0) { continue }
                 $null = $sb.AppendLine('    ' + $pair[0] + ':')
-                foreach ($l in $lines) { $null = $sb.AppendLine('      ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+                foreach ($l in $lines) { $null = $sb.AppendLine('      ' + (& $tl $l)) }
             }
         }
         $null = $sb.AppendLine(('  Enforcement attempts in the last {0} days: {1}' -f $Result.Days, $d.AttemptsTotal))
         foreach ($at in @($d.Attempts)) {
-            $null = $sb.AppendLine(('    {0}  {1} rev {2}: exit {3}{4}, {5} s, detection before: {6}, after: {7}' -f (& $t $at.StartUtc), $at.Action, $at.Revision, $(if ($null -ne $at.ExitCode) { $at.ExitCode } else { '?' }), $(if ($at.ExitMeaning) { ' (' + $at.ExitMeaning + ')' } else { '' }), $at.Seconds, $(if ($at.PreDetection) { $at.PreDetection } else { '-' }), $(if ($at.PostDetection) { $at.PostDetection } else { '-' })))
+            # no discovery line follows an exit the client counts as failure: it does not detect then
+            $after = $at.PostDetection
+            if (-not $after) { $after = $(if ($null -ne $at.ExitCode -and [int64]$at.ExitCode -ne 0 -and $at.ExitMeaning -ne 'Success') { 'not evaluated (the client skips the detection after an exit code it counts as failure)' } else { '-' }) }
+            $null = $sb.AppendLine(('    {0}  {1} rev {2}: exit {3}{4}, {5} s, detection before: {6}, after: {7}' -f (& $t $at.StartUtc), $at.Action, $at.Revision, $(if ($null -ne $at.ExitCode) { $at.ExitCode } else { '?' }), $(if ($at.ExitMeaning) { ' (' + $at.ExitMeaning + ')' } else { '' }), $at.Seconds, $(if ($at.PreDetection) { $at.PreDetection } else { '-' }), $after))
             foreach ($n in @($at.Notes)) { $null = $sb.AppendLine('        ' + $n) }
         }
         $null = $sb.AppendLine(('  Detection results logged for rev {0} (AppDiscovery.log{1}):' -f $d.Revision, $(if ([int]$d.DiscoveryOtherRevisions -gt 0) { ', ' + $d.DiscoveryOtherRevisions + ' lines of older revisions skipped' } else { '' })))
         if (@($d.DiscoveryHistory).Count -eq 0) { $null = $sb.AppendLine('    none in the window') }
-        foreach ($l in @($d.DiscoveryHistory)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+        foreach ($l in @($d.DiscoveryHistory)) { $null = $sb.AppendLine('    ' + (& $tl $l)) }
         if (@($d.IntentHistory).Count -gt 0) {
             $null = $sb.AppendLine('  Intent evaluations (AppIntentEval.log):')
-            foreach ($l in @($d.IntentHistory)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+            foreach ($l in @($d.IntentHistory)) { $null = $sb.AppendLine('    ' + (& $tl $l)) }
         }
         $null = $sb.AppendLine()
     }
@@ -1175,15 +1195,15 @@ function Format-TKTroubleshoot {
         $sched = ''; if ($c.PSObject.Properties['AppDeploymentEvalScheduleText']) { $sched = $c.AppDeploymentEvalScheduleText } elseif ($c.PSObject.Properties['AppDeploymentEvalSchedule']) { $sched = $c.AppDeploymentEvalSchedule }
         $null = $sb.AppendLine(('  application deployment evaluation: last {0}, schedule {1}' -f (& $t $c.AppDeploymentEvalLastUtc), $sched))
         $null = $sb.AppendLine(('  machine policy retrieval: last {0}' -f (& $t $c.MachinePolicyLastUtc)))
-        if ($c.PSObject.Properties['LastAssignmentRequest']) { $null = $sb.AppendLine('  ' + ([string]$c.LastAssignmentRequest -replace '^(\S+)T(\S+)', '$1 $2 UTC')) }
+        if ($c.PSObject.Properties['LastAssignmentRequest']) { $null = $sb.AppendLine('  ' + (& $tl ([string]$c.LastAssignmentRequest))) }
     }
     $w = $Result.Windows
     if ($w) {
         $null = $sb.AppendLine()
-        $null = $sb.AppendLine(('MAINTENANCE WINDOWS (device time, {0}, UTC{1}{2})' -f $w.TimeZone, $(if ([int]$w.UtcOffsetMinutes -ge 0) { '+' } else { '-' }), [math]::Abs([int]$w.UtcOffsetMinutes / 60)))
+        $null = $sb.AppendLine('MAINTENANCE WINDOWS (* = open now)')
         if (@($w.Windows).Count -eq 0) { $null = $sb.AppendLine('  none - deployments run as soon as they are due') }
-        foreach ($x in @($w.Windows)) { $null = $sb.AppendLine(('  {0}{1}  {2} - {3}  ({4} min){5}' -f $(if ($x.ActiveNow) { '* ' } else { '  ' }), $x.TypeName.PadRight(34), ([string]$x.StartLocal -replace 'T', ' '), ([string]$x.EndLocal -replace 'T', ' '), $x.Minutes, $(if ($x.Type -in 1, 2) { '' } else { '  [does not gate applications]' }))) }
-        if (@($w.LogLines).Count -gt 0) { $null = $sb.AppendLine('  ServiceWindowManager.log:'); foreach ($l in @($w.LogLines)) { $null = $sb.AppendLine('    ' + ($l -replace '^(\S+)T(\S+)', '$1 $2 UTC')) } }
+        foreach ($x in @($w.Windows)) { $null = $sb.AppendLine(('  {0}{1}  {2} - {3}  ({4} min){5}{6}' -f $(if ($x.ActiveNow) { '* ' } else { '  ' }), $x.TypeName.PadRight(34), ([string]$x.StartLocal -replace 'T', ' '), ([string]$x.EndLocal -replace 'T', ' '), $x.Minutes, $(if ($x.Type -in 1, 2) { '' } else { '  [does not gate applications]' }), $(if ($x.PSObject.Properties['Schedules'] -and [int]$x.Schedules -gt 1) { '  [the same window from ' + $x.Schedules + ' schedules - usually one per collection]' } else { '' }))) }
+        if (@($w.LogLines).Count -gt 0) { $null = $sb.AppendLine('  ServiceWindowManager.log:'); foreach ($l in @($w.LogLines)) { $null = $sb.AppendLine('    ' + (& $tl $l)) } }
     }
     if (@($Result.Queue).Count -gt 0) {
         $null = $sb.AppendLine()

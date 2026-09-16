@@ -1,5 +1,62 @@
 ﻿# Changelog - AZITC Toolkit
 
+## 2026-09-16 - Troubleshoot: the verdict names the exit code, one clock, less noise
+
+A customer's report for a required PSADT deployment (success codes 0 and 1707): the product was on
+the device, ConfigMgr called it failed, and the report described the contradiction ("detection
+says DISCOVERED, client says NotInstalled") without drawing the conclusion. Three things were
+wrong with the report, one of them a real time-zone bug.
+
+**The verdict names the cause.** Reproduced on CLIENT01 with the throwaway app (installer writes
+the detection key and exits 1): the client books `Failure, exit 1`, `CCM_Application.ErrorCode`
+= 1, state NotInstalled - and the AppEnforce block has no discovery line after the
+`Unmatched exit code (1) is considered an execution failure` line: the client does not run the
+detection after an exit it counts as failure. The next evaluation cycle (measured: the next
+"Policy + evaluate") found the key and turned the state to Installed; ErrorCode stays 1. New
+verdict, ahead of the generic "device changed since" one, when the detection is true now, the
+client says not installed and the last attempt ended with a code outside the success list: *the
+last run returned N, N is not in the success codes (X, Y), so the client recorded a failure
+although the product is on the device; it does not detect after a failure exit; the status'
+error 0x0000000N is that code in hex; the state corrects itself at the next evaluation.* The
+attempts list writes `after: not evaluated (the client skips the detection after an exit code it
+counts as failure)` instead of `-` in that case.
+
+**The time-zone bug.** The header said `deadline 19:49 UTC`, the policy section `18:49 UTC` for
+the same deployment - a March deadline read in September. Both values came from digits with a
+`+000`/`+***` offset, but the two sources do not mean the same thing by them:
+
+* `CCM_ApplicationCIAssignment` (policy) with `UseGMTTimes` carries UTC digits; without it the
+  digits are the clock reading the admin typed *for that date* (19:49 on a March clock = CET). The
+  latter is read as local time of that date, with that date's DST rule (`ToIsoLocalClock`).
+* `CCM_Application` (ClientSDK), `CCM_Scheduler_History`, `CCM_ExecutionRequestEx`: the digits
+  are UTC plus the offset the device has **today**. Derived from the customer's numbers: the site
+  held 18:49 UTC; read as local-of-that-date the digits gave 19:49, so the digits were 20:49 =
+  18:49 + today's two hours. `ToIsoLocalDigits` now subtracts today's offset. Unit test: March
+  and July digits built as UTC + today's offset both come back as 18:49 UTC; the current time
+  round-trips; both assignment rules give 18:49 for the March deadline.
+
+The header's deadline is now the earliest required assignment's (policy value); the ClientSDK
+value stays in the envelope as `DeadlineClientSdkUtc`, and when the two differ the client puts a
+line into the envelope's error field - the next such case will show itself. On CLIENT01 both read
+11:27 UTC for the 13:27 local deadline.
+
+**One clock.** Maintenance windows were in device time, the log lines below them in UTC, with the
+same digits meaning different moments. Everything is now written in the device's time: the
+envelope keeps UTC (keys still end in `Utc`), the client script words its verdict times in device
+time (`L`), and `Format-TKTroubleshoot` converts every ISO time and every log-line prefix with the
+zone the client reported (`Windows.TimeZone` -> `TimeZoneInfo.FindSystemTimeZoneById`, the date's
+own DST rule via `ConvertTimeFromUtc`). Header line 2: `all times are the device's time: W. Europe
+Standard Time, UTC+02:00 now`.
+
+**Less noise.** ServiceWindowManager writes the same one-, two- or three-line group many times in
+a row (`OnIsServiceWindowAvailable ... / It can therefore run` seven times within two minutes);
+a repeating group is written once with `[x7, 22:51 - 22:53]`. The same maintenance window
+reaching the client through two collections is listed twice by `CCM_ServiceWindow`; it is now one
+line with `[the same window from 2 schedules - usually one per collection]` - the client does not
+know the collection names, so they cannot be written here without asking the site (open item).
+The header handles an application the client does not know (was a strict-mode error).
+
+Script version 19 on the lab site.
 ## 2026-09-15 - Troubleshoot: the detection, evaluated on the device, and the attempts that led here
 
 The user's two questions: *why has an app that should be on the device not been retried for
