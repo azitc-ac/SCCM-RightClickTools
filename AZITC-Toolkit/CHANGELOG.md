@@ -168,6 +168,22 @@ AssetManagementNode.xml; a node's actions show on its folders). `AZITC-TK-OpenRe
 HTTP 200 and the report path on the lab reporting point. Errors land in a message box. Report and
 folder are installer parameters.
 
+**Report viewer window** (2026-09-16, later): the action now opens the report in a window with the
+same control the console uses for its own viewer, `Microsoft.ReportViewer.WinForms` (+ `.Common`),
+loaded from the console's bin folder (`SMS_ADMIN_UI_PATH\..`), `ProcessingMode Remote` against
+`ReportServerUri` with `ReportPath /<RootFolder>/<folder>/<report>`; current user's credentials,
+like the console. Verified on the lab console: `RenderingComplete` without error for the compliance
+report, `rsItemNotFound` for a made-up name (shown in a message box). The console's *own* viewer
+cannot be reused from a file-based extension: its Run action is `Class="AssemblyType"` ->
+`AdminUI.SrsReporting.dll`, `Actions.LaunchReport(formView, scopeNode, actionDescription,
+IResultObject resultObject, ...)` (reflection), and takes the report from the selected result object,
+an `SMS_Report` - on the collections node that is a collection. `-ReportInBrowser` (installer) /
+`-Browser` (script) keep the portal URL; it is also the fallback without the assemblies. Two
+PowerShell details: `Add-Type -Path` on `.Common.dll` reports type-load errors although the
+assembly is loaded (`Assembly.LoadFrom` instead), and output written inside a WinForms event
+handler is dropped - the test hook keeps its result in a script variable and prints it after
+`Application.Run`.
+
 **Logs tab** (late evening): `PSADT\*` and the logs the troubleshooter reads (DCMReporting, ServiceWindowManager,
 LocationServices) are in the dropdown; the first visit of the tab lists the PSADT folder by itself
 (one background job, 16 s on CLIENT01) and puts the files on top of the list, newest first; a listing

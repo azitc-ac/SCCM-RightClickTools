@@ -25,6 +25,9 @@
     compliance overview of the sccm-reports repository. '' installs no report action.
 .PARAMETER ReportFolder
     The SSRS folder of that report below the site's root folder.
+.PARAMETER ReportInBrowser
+    Open the report in the web portal instead of the report viewer window (the console's own
+    ReportViewer control, loaded from the console's bin folder).
 .PARAMETER Uninstall
     Remove the action files and the extension folder.
 #>
@@ -34,6 +37,7 @@ param(
     [bool]$SkipCertificateCheck = $true,
     [string]$Report = 'Anwendungs-Installationsstatus - Compliance-Übersicht',
     [string]$ReportFolder = 'Softwareverteilung - Anwendungsüberwachung',
+    [switch]$ReportInBrowser,
     [switch]$Uninstall
 )
 
@@ -112,7 +116,9 @@ $reportTarget = Join-Path -Path $ConsolePath -ChildPath "XmlStorage\Extensions\A
 if ($Report) {
     $reportScript = Join-Path -Path $extDir -ChildPath 'AZITC-TK-OpenReport.ps1'
     $rt = Get-Content -LiteralPath (Join-Path $PSScriptRoot $reportXmlName) -Raw -Encoding UTF8
-    $rc = $rt.Replace('##EXT_PATH##', $extDir).Replace('##REPORT_SCRIPT##', $reportScript).Replace('##REPORT##', $Report).Replace('##FOLDER##', $ReportFolder).Replace('##SKIPCERT##', $skip)
+    $browser = ''
+    if ($ReportInBrowser) { $browser = ' -Browser' }
+    $rc = $rt.Replace('##EXT_PATH##', $extDir).Replace('##REPORT_SCRIPT##', $reportScript).Replace('##REPORT##', $Report).Replace('##FOLDER##', $ReportFolder).Replace('##SKIPCERT##', $skip).Replace('##BROWSER##', $browser)
     $dir = Split-Path -Path $reportTarget -Parent
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     [System.IO.File]::WriteAllText($reportTarget, $rc, $utf8)

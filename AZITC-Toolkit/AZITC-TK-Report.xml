@@ -7,14 +7,14 @@
   The GUID is the RootNodeDescription of the Device Collections node in this console's
   XmlStorage\ConsoleRoot\AssetManagementNode.xml; folders below a node carry the node's actions.
 
-  Placeholders ##EXT_PATH##, ##REPORT_SCRIPT##, ##REPORT##, ##FOLDER## and ##SKIPCERT## are filled in by
+  Placeholders ##EXT_PATH##, ##REPORT_SCRIPT##, ##REPORT##, ##FOLDER##, ##SKIPCERT## and ##BROWSER## are filled in by
   the installer. Runtime token the console replaces here: ##SUB:__Server## (##SUB:SiteCode## is not filled in on this node).
 -->
 <ActionDescription
     Class="Executable"
     DisplayName="AZITC: Application compliance report"
     MnemonicDisplayName="AZITC: Application compliance report"
-    Description="Opens the report 'Anwendungs-Installationsstatus - Compliance-Übersicht' of the reporting point in the browser">
+    Description="Opens the report 'Anwendungs-Installationsstatus - Compliance-Übersicht' of the reporting point in the console's report viewer (-Browser: in the web portal)">
   <ShowOn>
     <string>ContextMenu</string>
   </ShowOn>
@@ -27,6 +27,6 @@
   </ImagesDescription>
   <Executable>
     <FilePath>##EXT_PATH##\AZITC-TK-Launcher.exe</FilePath>
-    <Parameters>"##REPORT_SCRIPT##" -Report "##REPORT##" -Folder "##FOLDER##" -SmsProvider "##SUB:__Server##"##SKIPCERT##</Parameters>
+    <Parameters>"##REPORT_SCRIPT##" -Report "##REPORT##" -Folder "##FOLDER##" -SmsProvider "##SUB:__Server##"##SKIPCERT####BROWSER##</Parameters>
   </Executable>
 </ActionDescription>
