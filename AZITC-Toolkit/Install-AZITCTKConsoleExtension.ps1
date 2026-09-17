@@ -1,5 +1,4 @@
-﻿#Requires -RunAsAdministrator
-<#
+﻿<#
 .SYNOPSIS
     Installs (or removes) the AZITC Toolkit right-click action in the Configuration Manager console.
 
@@ -30,6 +29,9 @@
     ReportViewer control, loaded from the console's bin folder).
 .PARAMETER Uninstall
     Remove the action files and the extension folder.
+.PARAMETER KeepWindow
+    Wait for Enter at the end. Set by the script itself when it restarts elevated, so the
+    new window does not close with the last line of output.
 #>
 [CmdletBinding()]
 param(
@@ -38,10 +40,40 @@ param(
     [string]$Report = 'Anwendungs-Installationsstatus - Compliance-Übersicht',
     [string]$ReportFolder = 'Softwareverteilung - Anwendungsüberwachung',
     [switch]$ReportInBrowser,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$KeepWindow
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Writing below the AdminConsole folder needs administrator rights. Not elevated,
+# the script starts itself again through the UAC prompt with the same arguments
+# and hands the result back - so it can be run from any prompt, and update.ps1
+# can call it without being elevated itself.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host 'Not running as administrator - restarting elevated (UAC prompt).'
+    # -Command, not -File: in -File mode every argument is a string, and a
+    # [switch] or [bool] parameter refuses "-Name:$false" ("cannot convert
+    # System.String to SwitchParameter"). Values go in single quotes.
+    $call = "& '{0}' -KeepWindow" -f $PSCommandPath.Replace("'", "''")
+    foreach ($name in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$name]
+        if ($name -eq 'KeepWindow') { continue }
+        if ($value -is [switch] -or $value -is [bool]) { $call += ' -{0}:${1}' -f $name, [bool]$value }
+        else { $call += " -{0} '{1}'" -f $name, ([string]$value -replace "'", "''" -replace '"', '') }
+    }
+    $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ('"{0}"' -f $call))
+    try {
+        $elevated = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
+    }
+    catch { throw 'The elevation prompt was declined - nothing was installed.' }
+    if ($elevated.ExitCode -ne 0) { throw ('The elevated run ended with exit code {0} - see its window.' -f $elevated.ExitCode) }
+    Write-Host 'Done in the elevated window.'
+    return
+}
+$exitCode = 0
+try {
 
 if (-not $ConsolePath) {
     $candidates = @()
@@ -129,3 +161,13 @@ Write-Host ''
 Write-Host 'Installed. Close the console completely and start it again.'
 Write-Host 'If the entry does not appear: Administration > Site Configuration > Sites > Hierarchy Settings >'
 Write-Host '"Only allow console extensions that are approved for the hierarchy" must be off.'
+}
+catch {
+    $exitCode = 1
+    Write-Host ''
+    Write-Host ("FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
+}
+finally {
+    if ($KeepWindow) { Write-Host ''; $null = Read-Host 'Press Enter to close' }
+}
+exit $exitCode

@@ -63,7 +63,7 @@ gives 403 (RunScript) or 500 (InitiateClientOperationEx, "Script is not approved
 
 ## Deploying to a site
 
-Updates: `update.ps1`, as administrator, no parameters - downloads the current folder from GitHub
+Updates: `update.ps1`, no parameters - downloads the current folder from GitHub
 (no git needed), publishes the Run Scripts and installs the console extension. `-WhatIf` lists
 what would be replaced, `-NoDeploy` only replaces the files, `-CertificateCheck` verifies the
 AdminService certificate (off by default, it is usually self-signed).
@@ -78,7 +78,7 @@ on any machine that reaches the SMS Provider (the admin workstation is the natur
 .\Publish-AZITCTKScripts.ps1 -SkipCertificateCheck
 .\Publish-AZITCTKScripts.ps1 -SmsProvider cm01.customer.example    # or name it
 
-# 2. the right-click action into every console that should have it (as administrator)
+# 2. the right-click action into every console that should have it (asks for elevation itself)
 .\Install-AZITCTKConsoleExtension.ps1
 ```
 
@@ -99,7 +99,7 @@ Re-running both steps after an update is safe: unchanged scripts are left alone.
 ## Installing the console action
 
 ```powershell
-.\Install-AZITCTKConsoleExtension.ps1          # as administrator, on the machine with the console
+.\Install-AZITCTKConsoleExtension.ps1          # on the machine with the console; restarts itself elevated (UAC prompt)
 ```
 
 Copies the window, the library and VERSION to `<AdminConsole>\extensions\AZITC-Toolkit\`, compiles the

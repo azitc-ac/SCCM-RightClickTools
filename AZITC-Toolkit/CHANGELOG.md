@@ -1,6 +1,22 @@
 ﻿# Changelog - AZITC Toolkit
 
-## 2026-09-16 - Troubleshoot: the verdict names the exit code, one clock, less noise
+## 2026-09-17 - The installer elevates itself
+
+`Install-AZITCTKConsoleExtension.ps1` had `#Requires -RunAsAdministrator`, which refuses to run at
+all from a normal window - the script could never ask for elevation itself, and `update.ps1`
+could only print "run it elevated". Now the script checks its token and, not elevated, starts
+itself again through the UAC prompt with the same arguments (`Start-Process -Verb RunAs`, `-Wait`,
+exit code handed back), the new window waiting for Enter at the end (`-KeepWindow`) so its
+output can be read. The restart goes through `-Command "& '<script>' -Name 'value' -Switch:$true"`,
+not `-File`: in `-File` mode every argument is a string, and a [switch] or [bool] parameter
+refuses `-Name:$false` ("cannot convert System.String to SwitchParameter") - measured. Values
+carry single quotes doubled; verified with a path containing an apostrophe and the report name
+with its umlaut. `update.ps1` no longer needs an elevated window: it calls the installer, which
+prompts. Also in all three tools' `update.ps1`: started from Explorer ("Run with PowerShell"),
+the window waits for Enter at the end - also after an error, which is written in red first -
+told apart from an open shell by the parent process (powershell, pwsh, cmd, Windows Terminal,
+ISE, VS Code, conhost).
+
 
 A customer's report for a required PSADT deployment (success codes 0 and 1707): the product was on
 the device, ConfigMgr called it failed, and the report described the contradiction ("detection

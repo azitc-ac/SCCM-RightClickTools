@@ -10,7 +10,7 @@
         Publish-AZITCTKScripts.ps1            the Run Scripts into the site (changed ones only)
         Install-AZITCTKConsoleExtension.ps1   the console extension on this machine (needs admin)
 
-    Run as administrator, without parameters. Scratch files (_*.ps1) and anything not in the
+    Run without parameters; the installer asks for elevation itself. Scratch files (_*.ps1) and anything not in the
     repository stay as they are.
 
 .PARAMETER NoDeploy
@@ -26,7 +26,7 @@
 
 .EXAMPLE
     .\update.ps1
-    Update, publish the scripts, install the console extension. Run as administrator.
+    Update, publish the scripts, install the console extension (UAC prompt for the last step).
 
 .EXAMPLE
     .\update.ps1 -WhatIf
@@ -129,12 +129,11 @@ if ($Deploy -and -not $WhatIfPreference) {
     & (Join-Path $root 'Publish-AZITCTKScripts.ps1') @publishArgs
 
     Write-Step 'Installing the console extension'
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) { Write-Host '    Not running as administrator - run .\Install-AZITCTKConsoleExtension.ps1 elevated.' -ForegroundColor Yellow }
-    else { & (Join-Path $root 'Install-AZITCTKConsoleExtension.ps1') }
+    # the installer elevates itself (UAC prompt) when this window is not elevated
+    & (Join-Path $root 'Install-AZITCTKConsoleExtension.ps1')
 }
 elseif (-not $WhatIfPreference) {
-    Write-Info 'Next: .\Publish-AZITCTKScripts.ps1 (site) and .\Install-AZITCTKConsoleExtension.ps1 (console, as admin) - or run update.ps1 without -NoDeploy.'
+    Write-Info 'Next: .\Publish-AZITCTKScripts.ps1 (site) and .\Install-AZITCTKConsoleExtension.ps1 (console) - or run update.ps1 without -NoDeploy.'
 }
 }
 catch {
