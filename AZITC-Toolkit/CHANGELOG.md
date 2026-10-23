@@ -1,6 +1,27 @@
 ﻿# Changelog - AZITC Toolkit
 
-## 2026-09-17 - The installer elevates itself
+## 2026-10-23 - A failed run of an Available deployment is not "consistent"
+
+A customer report: an Office package installed cleanly (PSADT exit 0 after 382 s, the Add/Remove
+Programs entry carries exactly the deployed version), the client recorded 0x87D00324, and the
+troubleshooter answered **[OK] Detection is false and the deployment does not want the app
+installed - consistent**. Wrong, and in the worst way: it declared a failed installation healthy.
+
+Why: an Available deployment leaves `ResolvedState` at Available even while a user-started
+install is running, so `$wantInstalled` is false and the chain fell through to the branch meant
+for "nothing is wanted on this device". That branch is now reached only when no such run took
+place. Before it: detection false, the last run in the log ended with a success exit and
+`detection after: not discovered` - that is 0x87D00324 and is reported as a failure, with the
+addition that an Available deployment does not retry by itself and the Add/Remove Programs entry
+above names the key the rule should look for. The old branch also mentions it when the client
+still holds a failed enforcement result from a run older than the log window.
+
+The customer's actual fault, for the record: the detection rule pointed at the uninstall key
+`...\CurrentVersion\Uninstall\test` - a placeholder nobody replaced - while the package registers
+under `Standard2024Volume - de-de`. Script version 20 on the lab site; branch verified with the
+data of that case and with the two cases it must not steal (nothing wanted, with and without an
+old failure), and an end-to-end run on CLIENT01 unchanged.
+
 
 `Install-AZITCTKConsoleExtension.ps1` had `#Requires -RunAsAdministrator`, which refuses to run at
 all from a normal window - the script could never ask for elevation itself, and `update.ps1`

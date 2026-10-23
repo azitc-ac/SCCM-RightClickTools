@@ -974,7 +974,23 @@ if (-not $app) {
             }
             else { Add-Verdict 'Warn' ('Detection is false and the last enforcement block (' + (L $lastAttempt.StartUtc) + ') has no exit code - the run may still be in progress or was cut off.') 'AppEnforce.log around that time.' }
         }
-        elseif ($detFalse -and -not $wantInstalled -and $app.ApplicabilityState -eq 'Applicable' -and $app.SupersessionState -ne 'Superseded') { Add-Verdict 'OK' 'Detection is false and the deployment does not want the app installed (uninstall or not targeted) - consistent.' '' }
+        elseif ($detFalse -and -not $wantInstalled -and $main.Attempts.Count -gt 0 -and $null -ne $main.Attempts[-1].ExitCode -and
+                ($main.Attempts[-1].ExitMeaning -eq 'Success' -or $main.Attempts[-1].ExitCode -eq 0) -and $main.Attempts[-1].PostDetection -eq 'not discovered') {
+            # An Available deployment someone started in Software Center: the client
+            # does not "want" the app (ResolvedState stays Available), so nothing is
+            # pending - but the run that just happened ended in 0x87D00324, and that
+            # is what the person who pressed Install wants to read. Until 2026-10-23
+            # this landed in the "nothing is wanted here - consistent" branch below
+            # and the report said OK over a failed installation.
+            $la = $main.Attempts[-1]
+            $arpText = $(if ($arp.Count -gt 0) { 'Add/Remove Programs lists ' + (($arp | ForEach-Object { $_.DisplayName + ' ' + $_.DisplayVersion + $(if ($_.WindowsInstaller) { ' (MSI)' } else { ' (non-MSI)' }) }) -join ', ') + '.' } else { 'Add/Remove Programs has no matching entry at all.' })
+            Add-Verdict 'Fail' ('The installer ran with exit ' + $la.ExitCode + ' (' + $la.Seconds + ' s, ' + (L $la.StartUtc) + ') and the detection afterwards found nothing - that is 0x87D00324. The deployment is Available, so the client is not going to retry on its own; somebody started this run from Software Center. Evaluated now: ' + $clauseText + '. ' + $arpText) 'The package installs something the rule does not look for (other key, other path, other version). Align the detection with what the installer really writes - the Add/Remove Programs entry above names the key - then publish the application again.'
+        }
+        elseif ($detFalse -and -not $wantInstalled -and $app.ApplicabilityState -eq 'Applicable' -and $app.SupersessionState -ne 'Superseded') {
+            $note = ''
+            if ($main.LastEnforce -and [string]$main.LastEnforce.ExecutionStatus -eq 'Failure') { $note = ' The client still holds the last enforcement result ' + $main.LastEnforce.ExitHex + ' of revision ' + $main.LastEnforce.Revision + ' - from a run that is older than the log window of ' + $Days + ' days.' }
+            Add-Verdict $(if ($note) { 'Warn' } else { 'OK' }) ('Detection is false and the deployment does not want the app installed (available only, uninstall, or not targeted) - consistent.' + $note) ''
+        }
         elseif ($detTrue -and -not $wantInstalled -and $isInstalled) {
             if ($app.ResolvedState -eq 'Uninstalled') { Add-Verdict 'Warn' 'The deployment wants the app removed, and the detection still finds it.' 'Uninstall attempts are in AppEnforce.log; the uninstall command of the deployment type must actually remove what the detection looks for.' }
         }
