@@ -49,6 +49,12 @@
     Unchecked (default): roots found in Intermediate are listed and left alone. Checked: they
     are removed. They are not moved to Trusted Root - that would make them trusted.
 
+.PARAMETER RemoveWindowsDefaultRoots
+    Unchecked (default): roots Windows itself puts into Intermediate (Root Agency) are listed and
+    never removed. Checked (strict): they are treated like any other root - removed when
+    RemoveRootsFromIntermediate is checked too. Roots from AD (Enterprise store, i.e. the AIA
+    container) stay untouched either way.
+
 .PARAMETER ExcludeThumbprints
     Thumbprints to leave alone, separated by comma, semicolon or space.
 #>
@@ -56,6 +62,7 @@ param(
     [bool]$Apply = $false,
     [bool]$MoveIntermediatesFromRoot = $true,
     [bool]$RemoveRootsFromIntermediate = $false,
+    [bool]$RemoveWindowsDefaultRoots = $false,
     [string]$ExcludeThumbprints = ''
 )
 
@@ -68,7 +75,7 @@ $maxLines = 25
 
 # Windows itself puts "Root Agency" (a self-signed test root from the old Microsoft SDK) into
 # the Intermediate store. It is reported as a Windows default and not removed, also when
-# RemoveRootsFromIntermediate is checked; ExcludeThumbprints does not need to name it.
+# RemoveRootsFromIntermediate is checked - unless RemoveWindowsDefaultRoots is checked as well.
 $windowsDefaults = @{
     'FEE449EE0E3965A5246F000E87FDE2A065FD89D4' = 'Root Agency (Windows default)'
 }
@@ -156,7 +163,7 @@ function Invoke-StoreChange {
 $result = [ordered]@{
     Result   = ''
     Computer = $env:COMPUTERNAME
-    Settings = 'Apply={0}, MoveIntermediatesFromRoot={1}, RemoveRootsFromIntermediate={2}' -f $Apply, $MoveIntermediatesFromRoot, $RemoveRootsFromIntermediate
+    Settings = 'Apply={0}, MoveIntermediatesFromRoot={1}, RemoveRootsFromIntermediate={2}, RemoveWindowsDefaultRoots={3}' -f $Apply, $MoveIntermediatesFromRoot, $RemoveRootsFromIntermediate, $RemoveWindowsDefaultRoots
     Findings = @()
 }
 
@@ -193,7 +200,7 @@ try {
     foreach ($f in $found) {
         $thumb = $f.Cert.Thumbprint
         $isIntermediateInRoot = ($f.Store -eq 'Root')
-        if ($windowsDefaults.ContainsKey($thumb)) { $f.Outcome = 'left: ' + $windowsDefaults[$thumb]; continue }
+        if ($windowsDefaults.ContainsKey($thumb) -and -not $RemoveWindowsDefaultRoots) { $f.Outcome = 'left: ' + $windowsDefaults[$thumb]; continue }
         if ($exclude.ContainsKey($thumb)) { $f.Outcome = 'left: excluded'; continue }
         if ($isIntermediateInRoot -and -not $MoveIntermediatesFromRoot) { $f.Outcome = 'left: MoveIntermediatesFromRoot is off'; $leftSwitch++; continue }
         if (-not $isIntermediateInRoot -and -not $RemoveRootsFromIntermediate) { $f.Outcome = 'left: RemoveRootsFromIntermediate is off'; $leftSwitch++; continue }

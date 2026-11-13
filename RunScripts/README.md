@@ -28,7 +28,8 @@ and ignores `ValidateSet` - read from `ScriptParametersPage.ParseParameters` and
 |---|---|---|
 | `Apply` | unchecked | unchecked = report only, nothing changes |
 | `MoveIntermediatesFromRoot` | checked | move intermediates from Trusted Root to Intermediate |
-| `RemoveRootsFromIntermediate` | unchecked | remove roots from Intermediate |
+| `RemoveRootsFromIntermediate` | unchecked | remove roots from Intermediate (local store only; roots from AD/AIA always stay) |
+| `RemoveWindowsDefaultRoots` | unchecked | strict: with `RemoveRootsFromIntermediate`, also remove the roots Windows puts there itself (`Root Agency`) |
 | `ExcludeThumbprints` | empty | thumbprints to leave alone, separated by comma, semicolon or space |
 
 What it does and does not touch:
@@ -50,7 +51,10 @@ What it does and does not touch:
   Enterprise stores Root, CA (= Intermediate) and NTAuth. AD CS puts every CA certificate into
   the AIA container, roots included. Removing it there is a PKI change outside this script.
 - `Root Agency`, the self-signed test certificate Windows itself puts into the Intermediate
-  store, is listed and left alone, also with `RemoveRootsFromIntermediate` checked.
+  store, is listed and left alone, also with `RemoveRootsFromIntermediate` checked - unless
+  `RemoveWindowsDefaultRoots` is checked too. It is the only built-in exception; any other
+  root in the local store (a vendor's, the Microsoft TPM root some hosts carry) is removed by
+  `RemoveRootsFromIntermediate` unless `ExcludeThumbprints` names it.
 - **Move** = add the public certificate to Intermediate (skipped when it is there already),
   read Intermediate again, then remove it from Trusted Root and read Trusted Root again. If the
   add does not show, Trusted Root is not touched (`FAILED`).
