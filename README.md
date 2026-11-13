@@ -9,8 +9,9 @@ file-based, one folder per tool. Both need Windows PowerShell 5.1 and a console.
 | [**CollectionMembership**](CollectionMembership/README.md) | a device collection | "Manage Membership": shows in two tabs (required / available) which collections include the selected collection through an include rule, and adds or removes those memberships. Bilingual, German or English by console language. |
 
 Besides the two console extensions, [`RunScripts\`](RunScripts/README.md) holds stand-alone
-scripts for the console's **Run Script** action - currently `Remove-MisplacedCACertificate.ps1`
-(roots in the Intermediate store, intermediates in the Trusted Root store) - together with what
+scripts for the console's **Run Script** action - currently `Repair-MisplacedCACertificate.ps1`
+(moves intermediates out of Trusted Root; roots in the Intermediate store optional, as check
+boxes in the Run Script wizard) - together with what
 was measured about how the console shows a script's output and how to write one that stays
 readable there.
 

@@ -351,6 +351,12 @@ function New-TKScriptContent {
             elseif ($raw -is [int] -or $raw -is [long] -or $raw -is [int16] -or $raw -is [byte]) { $type = 'System.Int32' }
             else { $type = 'System.String' }
         }
+        # A boolean travels as 1/0, the way the console writes it (ScriptParametersControl.
+        # GenerateParameterXml); "True"/"False" is rejected by InitiateClientOperationEx (HTTP 500).
+        if ($type -eq 'System.Boolean') {
+            $isTrue = ($raw -is [bool] -and $raw) -or ([string]$raw -match '^(?i:true|1|\$true)$')
+            if ($isTrue) { $raw = '1' } else { $raw = '0' }
+        }
         $value = [System.Security.SecurityElement]::Escape([string]$raw)
         $null = $sb.AppendFormat('<ScriptParameter ParameterGroupGuid="{0}" ParameterGroupName="PG_{0}" ParameterName="{1}" ParameterType="{2}" ParameterDataType="{2}" ParameterValue="{3}"/>', $groupGuid, $name, $type, $value)
     }

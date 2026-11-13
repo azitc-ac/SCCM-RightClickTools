@@ -1,11 +1,17 @@
 ﻿<#
 .SYNOPSIS
-    Finds - and with -Mode Remove deletes - CA certificates that sit in the wrong computer store:
-      * self-signed (root) certificates in Intermediate Certification Authorities (LocalMachine\CA)
+    Finds CA certificates in the wrong computer store and, with Apply checked, fixes them:
       * certificates that are not self-signed (intermediates) in Trusted Root Certification
-        Authorities (LocalMachine\Root)
+        Authorities (LocalMachine\Root) are MOVED to Intermediate Certification Authorities
+        (LocalMachine\CA) - the remedy Microsoft gives for AD FS / WAP and Lync / Skype servers
+      * self-signed (root) certificates in Intermediate Certification Authorities are listed and
+        only removed when RemoveRootsFromIntermediate is checked (off by default)
 
 .DESCRIPTION
+    Every switch is a [bool] parameter because the console turns [bool] into a check box in the
+    Run Script wizard; it does not know [switch], and it ignores ValidateSet (read from
+    AdminUI.Scripts.dll, see README.md).
+
     Written to run as a ConfigMgr "Run Script" and to be readable in the console's script output
     window. That window shows a tree plus an indented "Raw Output" only when the output is JSON;
     any other text is shown as one line, with line breaks as literal \r\n and Write-Host lines
@@ -20,27 +26,36 @@
     rollover certificate (same name, signed by the old key) a root and delete it from the
     Intermediate store, where it belongs.
 
-    Only certificates in the computer's own registry store are removed. One that comes from
-    Group Policy or from Active Directory (Enterprise store) is reported as "deployed by ..." and
-    left alone: deleting it locally would be undone at the next policy refresh / autoenrollment;
+    Only certificates in the computer's own registry store are touched. One that comes from
+    Group Policy or from Active Directory (Enterprise store) is listed as "left: comes from ..."
+    and left alone: a local change would be undone at the next policy refresh / autoenrollment;
     the fix belongs at the source.
 
-    Before removing, every certificate is exported as .cer to
-    %windir%\Logs\MisplacedCACertificates\<yyyyMMdd-HHmmss>\ - restore with
-    certutil -addstore CA|Root <file>.
+    Moving = add to Intermediate (unless it is there already), check it is there, then remove it
+    from Root and check it is gone. If the add fails, Root is not touched. Before any change the
+    certificate is exported as .cer to %windir%\Logs\MisplacedCACertificates\<yyyyMMdd-HHmmss>\ -
+    restore with certutil -addstore CA|Root <file>.
 
     The Run Scripts host reports exit code 0 for any "exit N"; the outcome is the first property
-    of the output ("Result"), which also shows in the status list's output column.
+    of the output ("Result").
 
-.PARAMETER Mode
-    Report (default) lists what is misplaced and changes nothing. Remove deletes it.
+.PARAMETER Apply
+    Unchecked (default): report only, nothing changes. Checked: carry out what the switches say.
+
+.PARAMETER MoveIntermediatesFromRoot
+    Checked (default): intermediates found in Trusted Root are moved to Intermediate.
+
+.PARAMETER RemoveRootsFromIntermediate
+    Unchecked (default): roots found in Intermediate are listed and left alone. Checked: they
+    are removed. They are not moved to Trusted Root - that would make them trusted.
 
 .PARAMETER ExcludeThumbprints
     Thumbprints to leave alone, separated by comma, semicolon or space.
 #>
 param(
-    [ValidateSet('Report', 'Remove')]
-    [string]$Mode = 'Report',
+    [bool]$Apply = $false,
+    [bool]$MoveIntermediatesFromRoot = $true,
+    [bool]$RemoveRootsFromIntermediate = $false,
     [string]$ExcludeThumbprints = ''
 )
 
@@ -52,7 +67,8 @@ Set-StrictMode -Version 2
 $maxLines = 25
 
 # Windows itself puts "Root Agency" (a self-signed test root from the old Microsoft SDK) into
-# the Intermediate store. It is reported as a Windows default, never removed.
+# the Intermediate store. It is reported as a Windows default and not removed, also when
+# RemoveRootsFromIntermediate is checked; ExcludeThumbprints does not need to name it.
 $windowsDefaults = @{
     'FEE449EE0E3965A5246F000E87FDE2A065FD89D4' = 'Root Agency (Windows default)'
 }
@@ -122,10 +138,25 @@ function Get-ShortName {
     return $DistinguishedName
 }
 
+function Test-InStore {
+    param([string]$Store, [string]$Thumbprint)
+    return (Test-Path -LiteralPath "Cert:\LocalMachine\$Store\$Thumbprint")
+}
+
+function Invoke-StoreChange {
+    # Add or Remove one certificate in a machine store.
+    param([string]$Store, [string]$Action, [System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+    $x = New-Object System.Security.Cryptography.X509Certificates.X509Store($Store, 'LocalMachine')
+    $x.Open('ReadWrite')
+    try {
+        if ($Action -eq 'Add') { $x.Add($Cert) } else { $x.Remove($Cert) }
+    } finally { $x.Close() }
+}
+
 $result = [ordered]@{
     Result   = ''
     Computer = $env:COMPUTERNAME
-    Mode     = $Mode
+    Settings = 'Apply={0}, MoveIntermediatesFromRoot={1}, RemoveRootsFromIntermediate={2}' -f $Apply, $MoveIntermediatesFromRoot, $RemoveRootsFromIntermediate
     Findings = @()
 }
 
@@ -157,19 +188,29 @@ try {
     }
 
     $backupDir = $null
-    $removed = 0; $failed = 0; $toRemove = 0; $left = 0
+    $moved = 0; $removed = 0; $failed = 0; $toDo = 0; $leftPolicy = 0; $leftSwitch = 0
+    $names = @{ GroupPolicy = 'Group Policy'; Enterprise = 'AD (Enterprise store)'; Other = 'a store outside the registry' }
     foreach ($f in $found) {
         $thumb = $f.Cert.Thumbprint
+        $isIntermediateInRoot = ($f.Store -eq 'Root')
         if ($windowsDefaults.ContainsKey($thumb)) { $f.Outcome = 'left: ' + $windowsDefaults[$thumb]; continue }
         if ($exclude.ContainsKey($thumb)) { $f.Outcome = 'left: excluded'; continue }
+        if ($isIntermediateInRoot -and -not $MoveIntermediatesFromRoot) { $f.Outcome = 'left: MoveIntermediatesFromRoot is off'; $leftSwitch++; continue }
+        if (-not $isIntermediateInRoot -and -not $RemoveRootsFromIntermediate) { $f.Outcome = 'left: RemoveRootsFromIntermediate is off'; $leftSwitch++; continue }
         $byPolicy = @($f.Physical | Where-Object { $_ -ne 'Registry' })
         if ($byPolicy.Count -gt 0) {
-            $names = @{ GroupPolicy = 'Group Policy'; Enterprise = 'AD (Enterprise store)'; Other = 'a store outside the registry' }
             $f.Outcome = 'left: comes from ' + (($byPolicy | ForEach-Object { $names[$_] }) -join ' + ')
-            $left++
+            $leftPolicy++
             continue
         }
-        if ($Mode -eq 'Report') { $f.Outcome = 'would remove'; $toRemove++; continue }
+        $alreadyInCA = $isIntermediateInRoot -and (Test-InStore -Store 'CA' -Thumbprint $thumb)
+        if (-not $Apply) {
+            if (-not $isIntermediateInRoot) { $f.Outcome = 'would remove' }
+            elseif ($alreadyInCA) { $f.Outcome = 'would remove from Root (already in Intermediate)' }
+            else { $f.Outcome = 'would move to Intermediate' }
+            $toDo++
+            continue
+        }
 
         try {
             if (-not $backupDir) {
@@ -178,17 +219,35 @@ try {
             }
             [System.IO.File]::WriteAllBytes((Join-Path $backupDir ('{0}-{1}.cer' -f $f.Store, $thumb)), $f.Cert.RawData)
 
-            $x = New-Object System.Security.Cryptography.X509Certificates.X509Store($f.Store, 'LocalMachine')
-            $x.Open('ReadWrite')
-            try { $x.Remove($f.Cert) } finally { $x.Close() }
+            if ($isIntermediateInRoot -and -not $alreadyInCA) {
+                # Public part only - a CA certificate in Root has no business with a private key.
+                $pub = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(, $f.Cert.RawData)
+                Invoke-StoreChange -Store 'CA' -Action 'Add' -Cert $pub
+                if (-not (Test-InStore -Store 'CA' -Thumbprint $thumb)) {
+                    $f.Outcome = 'FAILED: not in Intermediate after adding - Root left unchanged'
+                    $failed++
+                    continue
+                }
+            }
 
+            Invoke-StoreChange -Store $f.Store -Action 'Remove' -Cert $f.Cert
             # "Remove ran" is not "it is gone": check the store again.
-            if (Test-Path -LiteralPath "Cert:\LocalMachine\$($f.Store)\$thumb") {
-                $f.Outcome = 'FAILED: still in the store after removal'
+            if (Test-InStore -Store $f.Store -Thumbprint $thumb) {
+                $f.Outcome = 'FAILED: still in {0} after removal' -f $storeNames[$f.Store]
                 $failed++
-            } else {
+            } elseif (-not $isIntermediateInRoot) {
                 $f.Outcome = 'removed'
                 $removed++
+            } elseif (-not (Test-InStore -Store 'CA' -Thumbprint $thumb)) {
+                # The end state is what counts: out of Root AND in Intermediate.
+                $f.Outcome = 'FAILED: removed from Root but not in Intermediate - restore from the backup'
+                $failed++
+            } elseif ($alreadyInCA) {
+                $f.Outcome = 'removed from Root (already in Intermediate)'
+                $moved++
+            } else {
+                $f.Outcome = 'moved to Intermediate'
+                $moved++
             }
         } catch {
             $f.Outcome = 'FAILED: ' + $_.Exception.Message
@@ -196,21 +255,22 @@ try {
         }
     }
 
-    # The verdict is about what this script can act on. Certificates from Group Policy or AD
-    # are a note behind it: an Enterprise CA publishes its own certificate to the AIA container,
-    # so on a domain member the root of an AD CS usually sits in the Intermediate store through
-    # the Enterprise store - normal, and not something to flag on every device.
-    if ($Mode -eq 'Report') {
-        if ($toRemove -gt 0) { $verdict = 'FOUND - {0} to remove (report only, nothing changed)' -f $toRemove }
-        else { $verdict = 'OK - nothing to remove' }
+    # The verdict is about what this script acts on. What a switch leaves out, and certificates
+    # from Group Policy or AD, are notes behind it: an Enterprise CA publishes its own certificate
+    # to the AIA container, so on a domain member the root of an AD CS sits in the Intermediate
+    # store through the Enterprise store (measured in the lab) - by design of AD CS.
+    if (-not $Apply) {
+        if ($toDo -gt 0) { $verdict = 'FOUND - {0} to fix (report only, nothing changed)' -f $toDo }
+        else { $verdict = 'OK - nothing to fix' }
     } elseif ($failed -gt 0) {
-        $verdict = 'FAILED - {0} removed, {1} failed' -f $removed, $failed
-    } elseif ($removed -gt 0) {
-        $verdict = 'REMOVED - {0} certificate(s), backup in {1}' -f $removed, $backupDir
+        $verdict = 'FAILED - {0} moved, {1} removed, {2} failed' -f $moved, $removed, $failed
+    } elseif (($moved + $removed) -gt 0) {
+        $verdict = 'FIXED - {0} moved to Intermediate, {1} removed, backup in {2}' -f $moved, $removed, $backupDir
     } else {
-        $verdict = 'OK - nothing to remove'
+        $verdict = 'OK - nothing to fix'
     }
-    if ($left -gt 0) { $verdict += '; {0} left in place (from Group Policy/AD, not the local store)' -f $left }
+    if ($leftSwitch -gt 0) { $verdict += '; {0} left by a switch' -f $leftSwitch }
+    if ($leftPolicy -gt 0) { $verdict += '; {0} left (from Group Policy/AD, not the local store)' -f $leftPolicy }
     $result.Result = $verdict
 
     $lines = @()

@@ -1,5 +1,16 @@
 ﻿# Changelog - AZITC Toolkit
 
+## 2026-11-13 - boolean Run Script parameters travel as 1/0
+
+`New-TKScriptContent` sent a `System.Boolean` parameter as `ParameterValue="True"`; the site
+answered `InitiateClientOperationEx` with HTTP 500. The console writes `1` / `0` for a boolean
+(`ScriptParametersControl.GenerateParameterXml` in `AdminUI.Scripts.dll`), and with that the
+same call went through and the script's `[bool]` parameters arrived as `$true` / `$false`
+(measured with `RunScripts\Repair-MisplacedCACertificate.ps1` on the lab client, which echoes
+its switches). No toolkit script has a boolean parameter, so nothing here had hit it yet.
+Also read from the same assembly: the Create Script wizard turns `[bool]` into a check box,
+does not know `[switch]` and ignores `ValidateSet`.
+
 ## 2026-10-23 - A failed run of an Available deployment is not "consistent"
 
 A customer report: an Office package installed cleanly (PSADT exit 0 after 382 s, the Add/Remove

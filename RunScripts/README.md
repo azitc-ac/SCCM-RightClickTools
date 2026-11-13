@@ -3,73 +3,106 @@
 Scripts meant for the console's **Run Script** action (Software Library > Scripts), written so
 that their result is readable in the console's script output window.
 
-## Remove-MisplacedCACertificate.ps1
+## Repair-MisplacedCACertificate.ps1
 
-Finds CA certificates in the wrong computer store and, with `Mode = Remove`, deletes them:
+Finds CA certificates in the wrong computer store and, with `Apply` checked, fixes them:
 
-| Store | Misplaced there |
-|---|---|
-| Intermediate Certification Authorities (`Cert:\LocalMachine\CA`) | self-signed certificates (roots) |
-| Trusted Root Certification Authorities (`Cert:\LocalMachine\Root`) | certificates that are not self-signed (intermediates) |
+| Store | Misplaced there | Fix (switch, default) |
+|---|---|---|
+| Trusted Root Certification Authorities (`Cert:\LocalMachine\Root`) | certificates that are not self-signed (intermediates) | **moved** to Intermediate (`MoveIntermediatesFromRoot`, on) |
+| Intermediate Certification Authorities (`Cert:\LocalMachine\CA`) | self-signed certificates (roots) | removed (`RemoveRootsFromIntermediate`, **off**) |
 
-Parameters:
+Moving, not deleting, is what Microsoft gives as the remedy for intermediates in Trusted Root -
+[AD FS / WAP troubleshooting](https://learn.microsoft.com/en-us/windows-server/identity/ad-fs/troubleshooting/ad-fs-tshoot-wap-trust),
+and the 2015 Lync/Skype post the two well-known one-liners come from,
+[Checks to do in the Lync/Skype for Business Server Certificate Store](https://learn.microsoft.com/en-us/archive/blogs/uclobby/checks-to-do-in-the-lyncskype4b-certificate-store)
+(the Intermediate-store check was added there from a reader's comment). Roots in the
+Intermediate store are never moved to Trusted Root: that would make them trusted.
 
-- `Mode` - `Report` (default, changes nothing) or `Remove`.
-- `ExcludeThumbprints` - thumbprints to leave alone, separated by comma, semicolon or space.
+Parameters - all switches are `[bool]`, so the Run Script wizard shows them as **check boxes**
+(the console reads `[bool]` from the `param()` block as a check box; it does not know `[switch]`
+and ignores `ValidateSet` - read from `ScriptParametersPage.ParseParameters` and
+`ScriptParametersControl.InitializeGridViewControl` in `AdminUI.Scripts.dll`):
+
+| Parameter | Default | |
+|---|---|---|
+| `Apply` | unchecked | unchecked = report only, nothing changes |
+| `MoveIntermediatesFromRoot` | checked | move intermediates from Trusted Root to Intermediate |
+| `RemoveRootsFromIntermediate` | unchecked | remove roots from Intermediate |
+| `ExcludeThumbprints` | empty | thumbprints to leave alone, separated by comma, semicolon or space |
 
 What it does and does not touch:
 
 - **Self-signed** means the same subject and issuer **and** an Authority Key Identifier that is
   absent or equal to the Subject Key Identifier. A CA key-rollover certificate has the same
   name but is signed by the old key; it belongs in the Intermediate store and is not touched.
-- Only certificates in the computer's own **registry** store are removed. A certificate that
+- Only certificates in the computer's own **registry** store are touched. A certificate that
   comes from **Group Policy** or from **AD** (the Enterprise store) is listed with
-  `left: comes from ...` - a local deletion would come back with the next policy refresh or
-  autoenrollment. An Enterprise CA publishes its own certificate to the AIA container, so on
-  domain members its root normally sits in the Intermediate store through the Enterprise
-  store; that is expected and does not make the verdict `FOUND`.
+  `left: comes from ...` - a local change would come back with the next policy refresh or
+  autoenrollment. Where a certificate lives is read from the registry location of each
+  physical store (`SOFTWARE\Microsoft\SystemCertificates`, `SOFTWARE\Policies\Microsoft\SystemCertificates`,
+  `SOFTWARE\Microsoft\EnterpriseCertificates`); Registry and Enterprise were seen in the lab,
+  Group Policy is not tested. A certificate that an installer or Intune put into the local
+  store looks like any local one; if it comes back after a fix, that is the sign.
+- **The root of an AD CS in the Intermediate store is by design.** Measured in the lab AD: the
+  Enterprise CA's setup created its certificate in `CN=Certification Authorities`, `CN=AIA`
+  and `CN=NTAuthCertificates` (same second), and every domain member mirrors these into the
+  Enterprise stores Root, CA (= Intermediate) and NTAuth. AD CS puts every CA certificate into
+  the AIA container, roots included. Removing it there is a PKI change outside this script.
 - `Root Agency`, the self-signed test certificate Windows itself puts into the Intermediate
-  store, is listed and left alone.
-- Every removed certificate is exported first to
+  store, is listed and left alone, also with `RemoveRootsFromIntermediate` checked.
+- **Move** = add the public certificate to Intermediate (skipped when it is there already),
+  read Intermediate again, then remove it from Trusted Root and read Trusted Root again. If the
+  add does not show, Trusted Root is not touched (`FAILED`).
+- Every changed certificate is exported first to
   `%windir%\Logs\MisplacedCACertificates\<yyyyMMdd-HHmmss>\<store>-<thumbprint>.cer`.
-  Restore: `certutil -addstore CA <file>` or `certutil -addstore Root <file>`.
-- After the removal the store is read again; a certificate still there is `FAILED`.
+  Restore: `certutil -addstore Root <file>` (or `CA`).
 
 Output, one object (shown here as the console's *Raw Output* tab shows it):
 
 ```json
 {
-    "Result": "REMOVED - 2 certificate(s), backup in C:\\Windows\\Logs\\MisplacedCACertificates\\20261113-101500",
+    "Result": "FIXED - 1 moved to Intermediate, 0 removed, backup in C:\\Windows\\Logs\\MisplacedCACertificates\\20261113-101500; 2 left by a switch",
     "Computer": "CLIENT01",
-    "Mode": "Remove",
+    "Settings": "Apply=True, MoveIntermediatesFromRoot=True, RemoveRootsFromIntermediate=False",
     "Findings": [
-        "Intermediate store holds root: Contoso Root | issuer Contoso Root | expires 2030-01-01 | <thumbprint> | Registry | removed",
-        "Root store holds intermediate: Contoso Issuing CA | issuer Contoso Root | expires 2028-06-30 | <thumbprint> | Registry | removed"
+        "Intermediate store holds root: Root Agency | issuer Root Agency | expires 2040-01-01 | FEE449EE0E3965A5246F000E87FDE2A065FD89D4 | Registry | left: Root Agency (Windows default)",
+        "Intermediate store holds root: Contoso Root | issuer Contoso Root | expires 2030-01-01 | <thumbprint> | Enterprise | left: RemoveRootsFromIntermediate is off",
+        "Root store holds intermediate: Contoso Issuing CA | issuer Contoso Root | expires 2028-06-30 | <thumbprint> | Registry | moved to Intermediate"
     ],
     "Backup": "C:\\Windows\\Logs\\MisplacedCACertificates\\20261113-101500"
 }
 ```
 
-`Result` starts with `OK`, `FOUND` (Report), `REMOVED`, `FAILED` or `ERROR`; certificates
-from Group Policy or AD are added as `; N left in place (from Group Policy/AD, not the local store)`.
-Because it is the first property, it is also the start of the stored output text. More than
-25 certificates are counted, not listed.
+`Result` starts with `OK`, `FOUND` (report only), `FIXED`, `FAILED` or `ERROR`, followed by
+`; N left by a switch` and `; N left (from Group Policy/AD, not the local store)` where that
+applies. Because it is the first property, it is also the start of the stored output text.
+More than 25 certificates are counted, not listed.
 
-Tested on 2026-11-13 as a Run Script on the lab client, with throw-away certificates created
-there first (self-signed and signed with `New-SelfSignedCertificate`, private keys deleted):
+Tested on 2026-11-13 as a Run Script on the lab client, parameters passed the way the console
+passes them (booleans as `1`/`0`), with throw-away certificates created there first
+(`New-SelfSignedCertificate`, private keys deleted): roots and a root with `Ü` in its name in
+Intermediate, a rollover certificate (same name, signed by the old key) and a proper
+intermediate in Intermediate, one intermediate only in Trusted Root, one in both.
 
-- Report found the root in the Intermediate store, a root with `Ü` in its name (arrived as
-  U+00DC), the self-signed old key of a rollover pair, and the intermediate in the Trusted Root
-  store. It left alone the rollover certificate (same name, signed by the old key), two
-  properly placed intermediates, `Root Agency`, and the lab's AD CS root that sits in the
-  Intermediate store through the Enterprise store.
-- The same script with a name-only check (the AKI comparison removed) also reported the
-  rollover certificate - the check is what keeps it.
-- Remove deleted the four, wrote four `.cer` files, and the following Report was back to `OK`.
-- Certificates made with `New-SelfSignedCertificate` (with and without `-Signer`) also showed
-  up in the Intermediate store although the test never put them there: an intermediate added
-  only to the Root store, and the self-signed old key of the rollover pair, added nowhere.
-  Why is not established; worth knowing when building test certificates.
+- Report, default switches: `FOUND - 2 to fix` - "would move to Intermediate" and "would
+  remove from Root (already in Intermediate)"; the roots `left: RemoveRootsFromIntermediate is
+  off`; rollover certificate and proper intermediate not listed. With
+  `MoveIntermediatesFromRoot` unchecked: `OK - nothing to fix; 5 left by a switch`.
+- Apply, default switches: `FIXED - 2 moved to Intermediate`. Read back: both intermediates in
+  Intermediate and not in Trusted Root, the roots untouched, two `.cer` files.
+- Apply with `RemoveRootsFromIntermediate`: the two test roots removed; rollover certificate
+  and intermediates stayed; the lab's AD CS root `left: comes from AD (Enterprise store)`;
+  `Root Agency` left.
+- `Ü` arrived as U+00DC in the stored output.
+- Mutants, each run like the real thing - both must break the result, and did:
+  - self-signed by name only (AKI comparison removed): also flags the rollover certificate.
+  - move without the add to Intermediate: the intermediate ended up in no store. A first
+    version still reported it as "moved" - the end-state check (in Intermediate after the
+    removal from Root) was added because of this, and the mutant now reports `FAILED`.
+- Certificates made with `New-SelfSignedCertificate` (with and without `-Signer`) also show up
+  in the Intermediate store by themselves; the test clears CA and Root before placing them.
+  Why is not established.
 
 ## Why the output looks like this - measured
 
