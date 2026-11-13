@@ -30,6 +30,7 @@ and ignores `ValidateSet` - read from `ScriptParametersPage.ParseParameters` and
 | `MoveIntermediatesFromRoot` | checked | move intermediates from Trusted Root to Intermediate |
 | `RemoveRootsFromIntermediate` | unchecked | remove roots from Intermediate (local store only; roots from AD/AIA always stay) |
 | `RemoveWindowsDefaultRoots` | unchecked | strict: with `RemoveRootsFromIntermediate`, also remove the roots Windows puts there itself (`Root Agency`) |
+| `RemoveFromGroupPolicyStore` | unchecked | also fix misplaced certificates that come from Group Policy - meant for entries a removed GPO left behind (see below) |
 | `ExcludeThumbprints` | empty | thumbprints to leave alone, separated by comma, semicolon or space |
 
 What it does and does not touch:
@@ -42,9 +43,17 @@ What it does and does not touch:
   `left: comes from ...` - a local change would come back with the next policy refresh or
   autoenrollment. Where a certificate lives is read from the registry location of each
   physical store (`SOFTWARE\Microsoft\SystemCertificates`, `SOFTWARE\Policies\Microsoft\SystemCertificates`,
-  `SOFTWARE\Microsoft\EnterpriseCertificates`); Registry and Enterprise were seen in the lab,
-  Group Policy is not tested. A certificate that an installer or Intune put into the local
-  store looks like any local one; if it comes back after a fix, that is the sign.
+  `SOFTWARE\Microsoft\EnterpriseCertificates`); all three were seen in the lab. A certificate
+  that an installer or Intune put into the local store looks like any local one; if it comes
+  back after a fix, that is the sign.
+- **Group Policy with `RemoveFromGroupPolicyStore`:** the certificate's key under
+  `SOFTWARE\Policies\Microsoft\SystemCertificates\<store>\Certificates\<thumbprint>` is exported
+  (`.reg`, restore with `reg import`) and deleted - that store is not writable through
+  `X509Store`. If the export fails, nothing is removed. A GPO that still deploys the certificate
+  puts it back at the next refresh; the next report shows it again, marked `[Group Policy entry]`.
+  The fix for a live GPO is in the GPO. Measured in the lab: when the link of the GPO was
+  removed, `gpupdate` removed its certificates from the store by itself - a leftover needs a
+  policy run that did not complete, or an entry written there by something else.
 - **The root of an AD CS in the Intermediate store is by design.** Measured in the lab AD: the
   Enterprise CA's setup created its certificate in `CN=Certification Authorities`, `CN=AIA`
   and `CN=NTAuthCertificates` (same second), and every domain member mirrors these into the
@@ -104,6 +113,14 @@ intermediate in Intermediate, one intermediate only in Trusted Root, one in both
   - move without the add to Intermediate: the intermediate ended up in no store. A first
     version still reported it as "moved" - the end-state check (in Intermediate after the
     removal from Root) was added because of this, and the mutant now reports `FAILED`.
+- Group Policy (same day, a test GPO linked to the lab client only, importing a root into
+  *Intermediate Certification Authorities* and an intermediate into *Trusted Root
+  Certification Authorities*): without the switch both `left: comes from Group Policy
+  (RemoveFromGroupPolicyStore is off)`; with it and `Apply`: `FIXED - 1 moved, 1 removed`,
+  policy keys gone, `.reg` backups written; `gpupdate` with the GPO still linked put both back.
+  GPO unlinked, `gpupdate`: both gone from the policy store without the script. Leftovers then
+  recreated from the `.reg` backups and fixed with `Apply`; they stayed gone after `gpupdate`.
+  Mutant (policy key not deleted): `FAILED: still in Intermediate/Root after removal`.
 - Certificates made with `New-SelfSignedCertificate` (with and without `-Signer`) also show up
   in the Intermediate store by themselves; the test clears CA and Root before placing them.
   Why is not established.

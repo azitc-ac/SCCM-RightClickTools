@@ -29,7 +29,8 @@
     Only certificates in the computer's own registry store are touched. One that comes from
     Group Policy or from Active Directory (Enterprise store) is listed as "left: comes from ..."
     and left alone: a local change would be undone at the next policy refresh / autoenrollment;
-    the fix belongs at the source.
+    the fix belongs at the source. RemoveFromGroupPolicyStore lifts this for Group Policy (for
+    entries a removed GPO left behind); AD stays untouched always.
 
     Moving = add to Intermediate (unless it is there already), check it is there, then remove it
     from Root and check it is gone. If the add fails, Root is not touched. Before any change the
@@ -55,6 +56,14 @@
     RemoveRootsFromIntermediate is checked too. Roots from AD (Enterprise store, i.e. the AIA
     container) stay untouched either way.
 
+.PARAMETER RemoveFromGroupPolicyStore
+    Unchecked (default): a misplaced certificate that comes from Group Policy
+    (HKLM\SOFTWARE\Policies\Microsoft\SystemCertificates) is listed and left alone. Checked: it is
+    handled like a local one - its policy registry key is exported (.reg) and deleted. Meant for
+    entries left behind by a GPO that no longer deploys them; a GPO that still does puts the
+    certificate back at the next policy refresh, which the next report shows. AD (Enterprise
+    store) stays untouched either way.
+
 .PARAMETER ExcludeThumbprints
     Thumbprints to leave alone, separated by comma, semicolon or space.
 #>
@@ -63,6 +72,7 @@ param(
     [bool]$MoveIntermediatesFromRoot = $true,
     [bool]$RemoveRootsFromIntermediate = $false,
     [bool]$RemoveWindowsDefaultRoots = $false,
+    [bool]$RemoveFromGroupPolicyStore = $false,
     [string]$ExcludeThumbprints = ''
 )
 
@@ -163,7 +173,7 @@ function Invoke-StoreChange {
 $result = [ordered]@{
     Result   = ''
     Computer = $env:COMPUTERNAME
-    Settings = 'Apply={0}, MoveIntermediatesFromRoot={1}, RemoveRootsFromIntermediate={2}, RemoveWindowsDefaultRoots={3}' -f $Apply, $MoveIntermediatesFromRoot, $RemoveRootsFromIntermediate, $RemoveWindowsDefaultRoots
+    Settings = 'Apply={0}, MoveIntermediatesFromRoot={1}, RemoveRootsFromIntermediate={2}, RemoveWindowsDefaultRoots={3}, RemoveFromGroupPolicyStore={4}' -f $Apply, $MoveIntermediatesFromRoot, $RemoveRootsFromIntermediate, $RemoveWindowsDefaultRoots, $RemoveFromGroupPolicyStore
     Findings = @()
 }
 
@@ -205,16 +215,22 @@ try {
         if ($isIntermediateInRoot -and -not $MoveIntermediatesFromRoot) { $f.Outcome = 'left: MoveIntermediatesFromRoot is off'; $leftSwitch++; continue }
         if (-not $isIntermediateInRoot -and -not $RemoveRootsFromIntermediate) { $f.Outcome = 'left: RemoveRootsFromIntermediate is off'; $leftSwitch++; continue }
         $byPolicy = @($f.Physical | Where-Object { $_ -ne 'Registry' })
-        if ($byPolicy.Count -gt 0) {
+        # Group Policy alone (with or without a local copy) may be cleared by the switch; AD
+        # (Enterprise) and unknown physical stores never.
+        $inGP = ($byPolicy.Count -eq 1 -and $byPolicy[0] -eq 'GroupPolicy')
+        if ($byPolicy.Count -gt 0 -and -not ($inGP -and $RemoveFromGroupPolicyStore)) {
             $f.Outcome = 'left: comes from ' + (($byPolicy | ForEach-Object { $names[$_] }) -join ' + ')
+            if ($inGP) { $f.Outcome += ' (RemoveFromGroupPolicyStore is off)' }
             $leftPolicy++
             continue
         }
+        $via = ''
+        if ($inGP) { $via = ' [Group Policy entry]' }
         $alreadyInCA = $isIntermediateInRoot -and (Test-InStore -Store 'CA' -Thumbprint $thumb)
         if (-not $Apply) {
-            if (-not $isIntermediateInRoot) { $f.Outcome = 'would remove' }
-            elseif ($alreadyInCA) { $f.Outcome = 'would remove from Root (already in Intermediate)' }
-            else { $f.Outcome = 'would move to Intermediate' }
+            if (-not $isIntermediateInRoot) { $f.Outcome = 'would remove' + $via }
+            elseif ($alreadyInCA) { $f.Outcome = 'would remove from Root (already in Intermediate)' + $via }
+            else { $f.Outcome = 'would move to Intermediate' + $via }
             $toDo++
             continue
         }
@@ -237,23 +253,38 @@ try {
                 }
             }
 
-            Invoke-StoreChange -Store $f.Store -Action 'Remove' -Cert $f.Cert
+            if ($inGP) {
+                # The Group Policy store is a registry key, not writable through X509Store.
+                # Export the key first (reg import restores it exactly), then delete it.
+                $gpKey = 'SOFTWARE\Policies\Microsoft\SystemCertificates\{0}\Certificates\{1}' -f $f.Store, $thumb
+                $regFile = Join-Path $backupDir ('{0}-{1}-GroupPolicy.reg' -f $f.Store, $thumb)
+                $null = & reg.exe export ('HKLM\' + $gpKey) $regFile /y 2>&1
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $regFile)) {
+                    $f.Outcome = 'FAILED: could not export the Group Policy entry - nothing removed'
+                    $failed++
+                    continue
+                }
+                Remove-Item -LiteralPath ('HKLM:\' + $gpKey) -Recurse -Force
+            }
+            if (-not $inGP -or (Test-Path -LiteralPath "HKLM:\SOFTWARE\Microsoft\SystemCertificates\$($f.Store)\Certificates\$thumb")) {
+                Invoke-StoreChange -Store $f.Store -Action 'Remove' -Cert $f.Cert
+            }
             # "Remove ran" is not "it is gone": check the store again.
             if (Test-InStore -Store $f.Store -Thumbprint $thumb) {
                 $f.Outcome = 'FAILED: still in {0} after removal' -f $storeNames[$f.Store]
                 $failed++
             } elseif (-not $isIntermediateInRoot) {
-                $f.Outcome = 'removed'
+                $f.Outcome = 'removed' + $via
                 $removed++
             } elseif (-not (Test-InStore -Store 'CA' -Thumbprint $thumb)) {
                 # The end state is what counts: out of Root AND in Intermediate.
                 $f.Outcome = 'FAILED: removed from Root but not in Intermediate - restore from the backup'
                 $failed++
             } elseif ($alreadyInCA) {
-                $f.Outcome = 'removed from Root (already in Intermediate)'
+                $f.Outcome = 'removed from Root (already in Intermediate)' + $via
                 $moved++
             } else {
-                $f.Outcome = 'moved to Intermediate'
+                $f.Outcome = 'moved to Intermediate' + $via
                 $moved++
             }
         } catch {
